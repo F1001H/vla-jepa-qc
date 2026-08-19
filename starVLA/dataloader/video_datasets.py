@@ -17,7 +17,6 @@ def random_crop_or_pad(video, target_h, target_w, pad_value=0):
     T, H, W, C = video.shape
     assert C == 3
 
-    # 1️⃣ 随机 crop 起点（如果原图更大）
     top = random.randint(0, H - target_h) if H > target_h else 0
     left = random.randint(0, W - target_w) if W > target_w else 0
 
@@ -28,7 +27,6 @@ def random_crop_or_pad(video, target_h, target_w, pad_value=0):
         :
     ]
 
-    # 2️⃣ padding（如果原图更小）
     out = np.full(
         (T, target_h, target_w, 3),
         pad_value,
@@ -53,8 +51,8 @@ def resize_video(video, target_h, target_w):
     for t in range(T):
         out[t] = cv2.resize(
             video[t],
-            (target_w, target_h),  # 注意：cv2 是 (W, H)
-            interpolation=cv2.INTER_AREA  # 下采样最稳
+            (target_w, target_h), 
+            interpolation=cv2.INTER_AREA 
         )
 
     return out
@@ -69,10 +67,6 @@ def collate_fn(batch, n_views=2, resolution_size=224):
         example["lang"] = instruction
         examples.append(example)
 
-        #print(video.shape, video_batch["video"][0].shape)
-        #print(video_batch["image"][0])
-        #print(video_batch["lang"][0])
-        #exit()
     return examples
 
 class VideoFolderDataset(Dataset):
@@ -125,7 +119,6 @@ class VideoFolderDataset(Dataset):
 
         start = random.randint(0, frame_count - self.n_frames)
 
-        # 3️⃣ 连续、递增、合法的 frame_ids
         frame_ids = np.arange(start, start + self.n_frames, dtype=np.int64)
 
         frames = []
@@ -134,19 +127,13 @@ class VideoFolderDataset(Dataset):
             ret, frame = cap.read()
             if not ret:
                 raise ValueError(f"Unable to read frame at index {idx}")
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
         cap.release()
-        #frames = random_crop_or_pad(
-        #    np.array(frames),
-        #    target_h=self.crop_h_size,
-        #    target_w=self.crop_w_size,
-        #    pad_value=0)
         frames = resize_video(
             np.array(frames),
             target_h=self.crop_h_size,
             target_w=self.crop_w_size)
-
-        #print(frames.shape, video_path, file_idx, file_idx in self.id2text.keys())
 
         return [frames, self.id2text[file_idx]]
 

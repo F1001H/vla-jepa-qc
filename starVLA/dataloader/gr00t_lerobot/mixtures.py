@@ -21,7 +21,7 @@ DATASET_NAMED_MIXTURES = {
     ],
 
     "droid": [
-        ("", 1.0, "libero_franka"),
+        ("", 1.0, "droid_franka"),
     ],
 
     "fr3_realworld": [

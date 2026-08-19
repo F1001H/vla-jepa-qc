@@ -143,35 +143,6 @@ class VLA_JEPA(baseframework):
         
         state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
 
-        """
-        if self.action_model.device == torch.device("cuda:0") and "action" in examples[0]:
-            print(batch_videos[0].shape) #[V, T, H, W, 3]
-            print(instructions[0])
-            print(actions[0].shape) # [T-1, action_dim]
-            print(state[0].shape) if state is not None else print("No state") #[state_dim]
-            print(len(batch_videos), len(instructions), len(actions), len(state) if state is not None else "No state")
-            from diffusers.utils import export_to_video
-            export_to_video(batch_videos[0][0]/255.0, "data_view_0.mp4")
-            export_to_video(batch_videos[0][1]/255.0, "data_view_1.mp4")
-            batch_images[0][0].save("data_image_view_0.png")
-            batch_images[0][1].save("data_image_view_1.png")
-            #print(self.action_tokens)
-            print(self.replace_prompt)
-            print(self.action_token_ids)
-        elif self.action_model.device == torch.device("cuda:0") and "action" not in examples[0]:
-            print(batch_videos[0].shape) #[V, T, H, W, 3]
-            print(instructions[0])
-            print(len(batch_videos), len(instructions))
-            from diffusers.utils import export_to_video
-            export_to_video(batch_videos[0][0]/255.0, "video_view_0.mp4")
-            export_to_video(batch_videos[0][1]/255.0, "video_view_1.mp4")
-            batch_images[0][0].save("video_image_view_0.png")
-        exit()
-        """
-        
-        
-
-        #[print(each.shape, end=";") for each in batch_videos]
         batch_videos = np.stack(batch_videos)  #  [B, V, T, H, W, 3]
         batch_videos = batch_videos.transpose(0,1,2,5,3,4)  # [B, V, T, 3, H, W]
 
@@ -192,8 +163,6 @@ class VLA_JEPA(baseframework):
         action_indices = torch.isin(qwen_inputs['input_ids'], torch.tensor(self.action_token_ids, device=qwen_inputs['input_ids'].device))
         action_indices = action_indices.nonzero(as_tuple=True)
 
-        # TODO action condition tokens
-        #embodied_action_indices = torch.isin(qwen_inputs['input_ids'], torch.tensor([self.embodied_action_token_id], device=qwen_inputs['input_ids'].device))
         embodied_action_indices = torch.isin(qwen_inputs['input_ids'], torch.tensor([self.embodied_action_token_id], device=qwen_inputs['input_ids'].device))
         embodied_action_indices = embodied_action_indices.nonzero(as_tuple=True)
         
@@ -209,8 +178,6 @@ class VLA_JEPA(baseframework):
             B, _, H = last_hidden.shape
             action_tokens = last_hidden[action_indices[0], action_indices[1], :].view(B, -1, H)  # [B, action_len, H]
             embodied_action_tokens = last_hidden[embodied_action_indices[0], embodied_action_indices[1], :].view(B, -1, H)  # [B, action_len, H]
-            #print(action_tokens.shape, last_hidden.shape, embodied_action_tokens.shape)
-            #exit()
         
             # Step 2: JEPA Encoder
             B, V, T, C, H, W = batch_videos.shape
@@ -223,15 +190,19 @@ class VLA_JEPA(baseframework):
             input_videos = torch.cat(input_videos, dim=0)  # [B*V, T, C, H, W]
             with torch.no_grad():
                 video_embeddings = self.vj_encoder.get_vision_features(pixel_values_videos=input_videos)
-                video_embeddings = torch.cat(torch.chunk(video_embeddings, chunks=V, dim=0), dim=2)
+                num_temporal_steps = T // self.vj_encoder.config.tubelet_size
+                tokens_per_clip, embed_dim = video_embeddings.shape[1:]
+                tokens_per_step = tokens_per_clip // num_temporal_steps
+                video_embeddings = video_embeddings.reshape(B, V, num_temporal_steps, tokens_per_step, embed_dim)
+                video_embeddings = video_embeddings.permute(0, 2, 3, 1, 4).contiguous().reshape(
+                    B, num_temporal_steps * tokens_per_step, V * embed_dim
+                )
             #print(video_embeddings.shape) # [B, T//tubelet_size * dim_per_frame, V*embed_dim]
         
             # Step 3: VJ Predictor
             T = T // self.vj_encoder.config.tubelet_size
             input_states = video_embeddings[:, :video_embeddings.shape[1] // T * (T-1),:]  # [B, (T-1)*dim_per_frame, V*embed_dim]
             gt_states = video_embeddings[:, video_embeddings.shape[1] // T:, :]
-            #print(input_states.shape, action_tokens.shape)
-            #exit()
             predicted_states = self.vj_predictor(
                 input_states,
                 action_tokens
@@ -248,7 +219,7 @@ class VLA_JEPA(baseframework):
 
         # Step 4: Action Expert Forward and Loss
         with torch.autocast("cuda", dtype=torch.float32):
-            # 标签对齐：取最后 chunk_len 段
+
             actions = torch.tensor(
                 np.array(actions), device=last_hidden.device, dtype=last_hidden.dtype
             )  # [B, T_full, action_dim]
@@ -265,11 +236,8 @@ class VLA_JEPA(baseframework):
                 state = torch.tensor(
                     np.array(state), device=last_hidden.device, dtype=last_hidden.dtype
                 )
-                #print(state.shape)
                 state_repeated = state.repeat(repeated_diffusion_steps, 1, 1)
 
-            #print(embodied_action_repeated.shape, actions_target_repeated.shape, state_repeated.shape) if state_repeated is not None else print("No state for action model")
-            #exit()
             action_loss = self.action_model(embodied_action_repeated, actions_target_repeated, state_repeated)  # (B, chunk_len, action_dim)
 
         return {"action_loss": action_loss, "wm_loss": teacher_forcing_wm_loss * 0.1}

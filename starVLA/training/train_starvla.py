@@ -278,60 +278,6 @@ class VLATrainer(TrainerUtils):
 
     import torch
 
-    def compare_state_dict(self, sd1, sd2, verbose=True):
-        # 1. key 完全一致
-        keys1 = set(sd1.keys())
-        keys2 = set(sd2.keys())
-
-        if keys1 != keys2:
-            missing_1 = keys2 - keys1
-            missing_2 = keys1 - keys2
-            if verbose:
-                if missing_1:
-                    print("❌ sd1 缺少 keys:", missing_1)
-                if missing_2:
-                    print("❌ sd2 缺少 keys:", missing_2)
-            return False
-
-        # 2. 逐 tensor 比较
-        for k in keys1:
-            t1 = sd1[k]
-            t2 = sd2[k]
-
-            # 允许 Parameter
-            if isinstance(t1, torch.nn.Parameter):
-                t1 = t1.data
-            if isinstance(t2, torch.nn.Parameter):
-                t2 = t2.data
-
-            # shape
-            if t1.shape != t2.shape:
-                if verbose:
-                    print(f"❌ [{k}] shape 不一致: {t1.shape} vs {t2.shape}")
-                return False
-
-            # dtype
-            if t1.dtype != t2.dtype:
-                if verbose:
-                    print(f"❌ [{k}] dtype 不一致: {t1.dtype} vs {t2.dtype}")
-                return False
-
-            # device 无所谓，统一搬到 CPU 比
-            t1_cpu = t1.detach().cpu()
-            t2_cpu = t2.detach().cpu()
-
-            # 数值完全一致（bit 级）
-            if not torch.equal(t1_cpu, t2_cpu):
-                if verbose:
-                    max_diff = (t1_cpu - t2_cpu).abs().max().item()
-                    print(f"❌ [{k}] 数值不一致, max diff = {max_diff}")
-                return False
-
-        if verbose:
-            print("✅ 两个 state_dict 完全一致")
-
-        return True
-
 
     def train(self):
         """execute training loop"""
@@ -364,26 +310,6 @@ class VLATrainer(TrainerUtils):
             if self.accelerator.sync_gradients:
                 progress_bar.update(1)
                 self.completed_steps += 1
-            
-            """
-            i += 1
-            print(i, self.completed_steps)
-            if i == 2:
-                self.initial_state_dict = {
-                    k: v.detach().clone()
-                    for k, v in self.model.state_dict().items()
-                }
-            elif i == 3:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-            elif i == 4:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-            elif i == 5:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-                exit()
-            """
             
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(

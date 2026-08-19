@@ -536,9 +536,9 @@ class Libero4in1DataConfig:
 @dataclass
 class LeRobotDroidDataConfig:
     video_keys = [
-        "observation.images.exterior_image_1_left",
-        "observation.images.exterior_image_1_right",
-        "observation.images.wrist_image_left",
+        "video.exterior_image_1",
+        "video.exterior_image_2",
+        "video.wrist_image",
     ]
     
     state_keys = [
