@@ -11,8 +11,6 @@ Conventions:
 3. Put each training strategy in its own `trainer_*.py` file (avoid large if‑else chains).  
 """
 import warnings
-
-# 全局忽略所有警告
 warnings.filterwarnings("ignore")
 from torch.utils.tensorboard import SummaryWriter
 
@@ -20,16 +18,16 @@ from torch.utils.tensorboard import SummaryWriter
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Tuple
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import numpy as np
-import time
 
 # Third-Party Libraries
 import torch
 import torch.distributed as dist
-import wandb
+#import wandb
 import yaml
 from accelerate import Accelerator, DeepSpeedPlugin
 from accelerate.logging import get_logger
@@ -39,15 +37,13 @@ from tqdm import tqdm
 from transformers import AutoProcessor, get_scheduler
 
 # Local Modules
+from starVLA.dataloader import build_dataloader
 from starVLA.training.trainer_utils.trainer_tools import normalize_dotlist_args
 from starVLA.model.framework import build_framework
 from starVLA.training.trainer_utils.trainer_tools import TrainerUtils
-from starVLA.training.trainer_utils.trainer_tools import build_param_lr_groups
 
 deepspeed_plugin = DeepSpeedPlugin()
-accelerator = Accelerator(
-    deepspeed_plugin=deepspeed_plugin,
-)
+accelerator = Accelerator(deepspeed_plugin=deepspeed_plugin)
 accelerator.print(accelerator.state)
 
 # Sane Defaults
@@ -55,8 +51,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 # Initialize Overwatch =>> Wraps `logging.Logger`
-from accelerate.logging import get_logger
-
 logger = get_logger(__name__)
 
 
@@ -84,32 +78,21 @@ def setup_directories(cfg) -> Path:
     return output_dir
 
 
-def build_model(cfg) -> torch.nn.Module:
-    """build model framework"""
-    logger.info(f"Loading Base VLM `{cfg.framework.qwenvl.base_vlm}` from ID/Path")
-    model = build_framework(cfg)
-
-    return model
-
-
-# here changes need to 📦 encapsulate Dataloader
-from starVLA.dataloader import build_dataloader
-
-
 def prepare_data(cfg, accelerator, output_dir) -> Tuple[DataLoader, DataLoader]:
     """prepare training data"""
-    # VLA data loader
     logger.info(f"Creating VLA Dataset with Mixture `{cfg.datasets.vla_data.data_mix}`")
     vla_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.vla_data.dataset_py)
+
+    video_train_dataloader = build_dataloader(cfg=cfg, dataset_py=cfg.datasets.video_data.dataset_py)
 
     accelerator.dataloader_config.dispatch_batches = False
     dist.barrier()
 
-    return vla_train_dataloader
+    return vla_train_dataloader, video_train_dataloader
 
 
 def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """set optimizer and scheduler"""
+    """set optimizer and learning rate scheduler"""
     # initialize optimizer
     param_groups = build_param_lr_groups(model=model, cfg=cfg)
     optimizer = torch.optim.AdamW(
@@ -120,7 +103,7 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
         eps=cfg.trainer.optimizer.eps,
     )
 
-    # print optimizer group info
+    # print optimizer group information
     if dist.is_initialized() and dist.get_rank() == 0:
         for i, group in enumerate(optimizer.param_groups):
             logger.info(f"LR Group {group['name']}: lr={group['lr']}, num_params={len(group['params'])}")
@@ -137,15 +120,17 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
     return optimizer, lr_scheduler
 
 
-class VLATrainer(TrainerUtils):
-    def __init__(self, cfg, model, vla_train_dataloader, optimizer, lr_scheduler, accelerator):
+class VLAMTrainer(TrainerUtils):
+    def __init__(self, cfg, model, vla_train_dataloader, video_train_dataloader, optimizer, lr_scheduler, accelerator):
         self.config = cfg
         self.model = model
         self.vla_train_dataloader = vla_train_dataloader
+        self.video_train_dataloader = video_train_dataloader
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.accelerator = accelerator
         self.writer = SummaryWriter(log_dir=os.path.join(cfg.run_root_dir, cfg.run_id, "tensorboard"))  # 保存目录
+
 
         # training status tracking
         self.completed_steps = 0
@@ -172,16 +157,14 @@ class VLATrainer(TrainerUtils):
         )
         self.model = self.freeze_backbones(self.model, freeze_modules=freeze_modules)
 
-        #  print model trainable parameters:
+        #  print trainable parameters of the model
         self.print_trainable_parameters(self.model)
 
         # initialize distributed training components
-        self.model, self.optimizer, self.vla_train_dataloader = self.setup_distributed_training(
-            self.accelerator,  # must be the first param
-            self.model,
-            self.optimizer,
-            self.vla_train_dataloader,
-            # self.vlm_train_dataloader
+        self.model, self.optimizer, self.vla_train_dataloader, self.video_train_dataloader = (
+            self.setup_distributed_training(
+                self.accelerator, self.model, self.optimizer, self.vla_train_dataloader, self.video_train_dataloader
+            )
         )
 
         #self._init_wandb()
@@ -244,29 +227,46 @@ class VLATrainer(TrainerUtils):
 
     def _log_metrics(self, metrics):
         """record training metrics"""
-        if self.completed_steps % self.config.trainer.logging_frequency == 0:
+        if (
+            self.completed_steps % self.config.trainer.logging_frequency == 0
+        ):  # some parameters should be initialized for the class
             if dist.get_rank() == 0:
                 # add learning rate
                 metrics["learning_rate"] = self.lr_scheduler.get_last_lr()[0]
 
-                # add epoch info
+                # add epoch information
                 metrics["epoch"] = round(self.completed_steps / len(self.vla_train_dataloader), 2)
+
+                # align with LIBERO-style scalar names
+                if "vla_action_loss" in metrics and "action_loss" not in metrics:
+                    metrics["action_loss"] = metrics["vla_action_loss"]
+                if "vla_wm_loss" in metrics and "wm_loss" not in metrics:
+                    metrics["wm_loss"] = metrics["vla_wm_loss"]
+                if "action_loss" in metrics and "wm_loss" in metrics and "loss" not in metrics:
+                    metrics["loss"] = metrics["action_loss"] + metrics["wm_loss"]
+                if "vlm_action_loss" in metrics and "vlm_loss" not in metrics:
+                    metrics["vlm_loss"] = metrics["vlm_action_loss"]
 
                 # record to W&B
                 #wandb.log(metrics, step=self.completed_steps)
-                # debug output
-                logger.info(f"Step {self.completed_steps}, Loss: {metrics})")
+                for key, value in metrics.items():
+                    if isinstance(value, (int, float, np.integer, np.floating)):
+                        if key not in {"mae_score", "mse_score"}:
+                            self.writer.add_scalar(key, float(value), self.completed_steps)
+
+                logger.info(f"Step {self.completed_steps}, Metrics: {metrics}")
 
     def _create_data_iterators(self):
         """create data iterators"""
         self.vla_iter = iter(self.vla_train_dataloader)
-        # self.vlm_iter = iter(self.vlm_train_dataloader)
+        self.vlm_iter = iter(self.video_train_dataloader)
 
     def _get_next_batch(self):
         """get next batch (automatically handle data loop)"""
         try:
             batch_vla = next(self.vla_iter)
         except StopIteration:
+            # check if there is self.vla_epoch_count
             if not hasattr(self, "vla_epoch_count"):
                 self.vla_epoch_count = 0
             self.vla_iter, self.vla_epoch_count = TrainerUtils._reset_dataloader(
@@ -274,64 +274,15 @@ class VLATrainer(TrainerUtils):
             )
             batch_vla = next(self.vla_iter)
 
-        return batch_vla
+        try:
+            batch_vlm = next(self.vlm_iter)
+        except StopIteration:
+            if not hasattr(self, "vlm_epoch_count"):
+                self.vlm_epoch_count = 0
+            self.vlm_iter, self.vlm_epoch_count = self._reset_dataloader(self.video_train_dataloader, self.vlm_epoch_count)
+            batch_vlm = next(self.vlm_iter)
 
-    import torch
-
-    def compare_state_dict(self, sd1, sd2, verbose=True):
-        # 1. key 完全一致
-        keys1 = set(sd1.keys())
-        keys2 = set(sd2.keys())
-
-        if keys1 != keys2:
-            missing_1 = keys2 - keys1
-            missing_2 = keys1 - keys2
-            if verbose:
-                if missing_1:
-                    print("❌ sd1 缺少 keys:", missing_1)
-                if missing_2:
-                    print("❌ sd2 缺少 keys:", missing_2)
-            return False
-
-        # 2. 逐 tensor 比较
-        for k in keys1:
-            t1 = sd1[k]
-            t2 = sd2[k]
-
-            # 允许 Parameter
-            if isinstance(t1, torch.nn.Parameter):
-                t1 = t1.data
-            if isinstance(t2, torch.nn.Parameter):
-                t2 = t2.data
-
-            # shape
-            if t1.shape != t2.shape:
-                if verbose:
-                    print(f"❌ [{k}] shape 不一致: {t1.shape} vs {t2.shape}")
-                return False
-
-            # dtype
-            if t1.dtype != t2.dtype:
-                if verbose:
-                    print(f"❌ [{k}] dtype 不一致: {t1.dtype} vs {t2.dtype}")
-                return False
-
-            # device 无所谓，统一搬到 CPU 比
-            t1_cpu = t1.detach().cpu()
-            t2_cpu = t2.detach().cpu()
-
-            # 数值完全一致（bit 级）
-            if not torch.equal(t1_cpu, t2_cpu):
-                if verbose:
-                    max_diff = (t1_cpu - t2_cpu).abs().max().item()
-                    print(f"❌ [{k}] 数值不一致, max diff = {max_diff}")
-                return False
-
-        if verbose:
-            print("✅ 两个 state_dict 完全一致")
-
-        return True
-
+        return batch_vla, batch_vlm
 
     def train(self):
         """execute training loop"""
@@ -346,52 +297,30 @@ class VLATrainer(TrainerUtils):
             range(self.config.trainer.max_train_steps), disable=not self.accelerator.is_local_main_process
         )
 
-        i = 0
-
         # main training loop
         while self.completed_steps < self.config.trainer.max_train_steps:
             # get data batch
             t_start_data = time.perf_counter()
-            batch_vla = self._get_next_batch()
+            batch_vla, batch_vlm = self._get_next_batch()
             t_end_data = time.perf_counter()
 
             # execute training step
             t_start_model = time.perf_counter()
-            step_metrics = self._train_step(batch_vla)
+            step_metrics = self._train_step(batch_vla, batch_vlm)
             t_end_model = time.perf_counter()
 
             # update progress
             if self.accelerator.sync_gradients:
                 progress_bar.update(1)
                 self.completed_steps += 1
-            
-            """
-            i += 1
-            print(i, self.completed_steps)
-            if i == 2:
-                self.initial_state_dict = {
-                    k: v.detach().clone()
-                    for k, v in self.model.state_dict().items()
-                }
-            elif i == 3:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-            elif i == 4:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-            elif i == 5:
-                comparison_state_dict = self.model.state_dict()
-                print(self.compare_state_dict(self.initial_state_dict, comparison_state_dict))
-                exit()
-            """
-            
+
             if self.accelerator.is_local_main_process:
                 progress_bar.set_postfix(
-                        {
-                            "data_times": f"{t_end_data - t_start_data:.3f}",
-                            "model_times": f"{t_end_model - t_start_model:.3f}",
-                        }
-                    )
+                    {
+                        "data_times": f"{t_end_data - t_start_data:.3f}",
+                        "model_times": f"{t_end_model - t_start_model:.3f}",
+                    }
+                )
 
             # evaluate model
             if self.completed_steps % self.config.trainer.eval_interval == 0:
@@ -406,6 +335,8 @@ class VLATrainer(TrainerUtils):
             if self.completed_steps % self.config.trainer.save_interval == 0 and self.completed_steps > 0:
                 self._save_checkpoint()
 
+                dist.barrier()  # ensure all processes are synchronized, avoid timeout
+
             # check termination condition
             if self.completed_steps >= self.config.trainer.max_train_steps:
                 break
@@ -414,7 +345,7 @@ class VLATrainer(TrainerUtils):
         self._finalize_training()
 
         # execute evaluation step
-
+    
     def eval_action_model(self, step_metrics: dict = None) -> float:
         """
         Evaluate the model on the given dataset using the specified metric function.
@@ -426,7 +357,7 @@ class VLATrainer(TrainerUtils):
 
         if self.accelerator.is_main_process:
 
-            examples = self._get_next_batch()
+            examples, vlm_data = self._get_next_batch()
 
             score = 0.0
             num_samples = len(examples)
@@ -434,16 +365,10 @@ class VLATrainer(TrainerUtils):
             batch_images = [example["image"] for example in examples]
             instructions = [example["lang"] for example in examples]  # [B, str]
             actions = [example["action"] for example in examples]  # label
-            state = [example["state"] for example in examples] if "state" in examples[0] else None  # [B, 1, state_dim]
-
 
             # Predict actions using the model
             output_dict = self.model.predict_action(
-                batch_images=batch_images, 
-                instructions=instructions, 
-                state=state,
-                use_ddim=True,
-                num_ddim_steps=20
+                batch_images=batch_images, instructions=instructions, use_ddim=True, num_ddim_steps=20
             )
 
             normalized_actions = output_dict["normalized_actions"]  # B, T, D
@@ -469,23 +394,23 @@ class VLATrainer(TrainerUtils):
         if self.accelerator.is_main_process:
             logger.info("***** Training Configuration *****")
             logger.info(f"  Total optimization steps = {self.config.trainer.max_train_steps}")
-            logger.info(f"  Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
+            logger.info(f" Per device batch size = {self.config.datasets.vla_data.per_device_batch_size}")
             logger.info(f"  Gradient accumulation steps = {self.config.trainer.gradient_accumulation_steps}")
             logger.info(f"  Total batch size = {self.total_batch_size}")
 
-    def _train_step(self, batch_vla, batch_vlm=None):
+    def _train_step(self, batch_vla, batch_vlm):
         """execute single training step"""
+        log_dict = {}
         with self.accelerator.accumulate(self.model):
             self.optimizer.zero_grad()
+
+            # TODO 再出错，mock 小模型查看原因
             # VLA task forward propagation
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 output_dict = self.model.forward(batch_vla)
-
                 total_loss = sum(output_dict.values())
-
-            # VLA backward propagation
+            
             self.accelerator.backward(total_loss)
-
             # gradient clipping
             if self.config.trainer.gradient_clipping is not None:
                 self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
@@ -493,10 +418,50 @@ class VLATrainer(TrainerUtils):
             # optimizer step
             self.optimizer.step()
             self.lr_scheduler.step()
-            
-            result_dict = {k: v.item() for k, v in output_dict.items()}
 
-        return result_dict
+            self.optimizer.zero_grad()
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                vlm_output = self.model.forward(batch_vlm)
+                vlm_loss = sum(vlm_output.values())
+
+            self.accelerator.backward(vlm_loss)
+            # gradient clipping
+            if self.config.trainer.gradient_clipping is not None:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+
+            # optimizer step
+            self.optimizer.step()
+            self.lr_scheduler.step()
+
+            """
+            self.optimizer.zero_grad()
+            #dist.barrier()  # @DEBUG
+            #pass
+            #============= Step 2
+            # VLM task forward propagation
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                vlm_output = self.model.forward(batch_vlm)
+                vlm_loss = sum(vlm_output.values())
+
+            self.accelerator.backward(vlm_loss)
+
+            #pass
+
+            #dist.barrier() #@DEBUG
+            # gradient clipping
+            if self.config.trainer.gradient_clipping is not None:
+                self.accelerator.clip_grad_norm_(self.model.parameters(), self.config.trainer.gradient_clipping)
+
+            # optimizer step
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            """
+
+        for k, v in output_dict.items():
+            log_dict[f"vla_{k}"] = v.item()
+        for k, v in vlm_output.items():
+            log_dict[f"vlm_{k}"] = v.item()
+        return log_dict
 
     def _finalize_training(self):
         """training end processing"""
@@ -507,6 +472,8 @@ class VLATrainer(TrainerUtils):
             state_dict = self.accelerator.get_state_dict(self.model)
             torch.save(state_dict, os.path.join(final_checkpoint, "pytorch_model.pt"))
             logger.info(f"Training complete. Final model saved at {final_checkpoint}")
+            self.writer.flush()
+            self.writer.close()
 
         # close W&B
         #if self.accelerator.is_main_process:
@@ -515,25 +482,29 @@ class VLATrainer(TrainerUtils):
         self.accelerator.wait_for_everyone()
 
 
+from starVLA.training.trainer_utils.trainer_tools import build_param_lr_groups
+
+
 def main(cfg) -> None:
     logger.info("VLA Training :: Warming Up")
 
     # create output directory and save config
     output_dir = setup_directories(cfg=cfg)
+
     # build model
     vla = build_framework(cfg)
     # prepare data
-    vla_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
-
+    vla_train_dataloader, video_train_dataloader = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)
     # set optimizer and scheduler
     optimizer, lr_scheduler = setup_optimizer_and_scheduler(model=vla, cfg=cfg)
 
     # create trainer
     # Run VLA Training
-    trainer = VLATrainer(
+    trainer = VLAMTrainer(
         cfg=cfg,
         model=vla,
         vla_train_dataloader=vla_train_dataloader,
+        video_train_dataloader=video_train_dataloader,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         accelerator=accelerator,
@@ -564,8 +535,11 @@ if __name__ == "__main__":
     # if cfg.is_debug:
     if cfg.is_debug and dist.is_initialized() and dist.get_rank() == 0:
         import debugpy
+
         debugpy.listen(("0.0.0.0", 10092))
-        print("🔍 Rank 0 waiting for debugger attach on port 10092...")
+        print(
+            "🔍 Rank 0 waiting for debugger attach on port 10092..."
+        )  # you may ask chatGPT what is debugger attach in vscode
         debugpy.wait_for_client()
 
     main(cfg)

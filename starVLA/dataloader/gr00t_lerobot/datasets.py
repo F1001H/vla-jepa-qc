@@ -1622,12 +1622,6 @@ class LeRobotMixtureDataset(Dataset):
                         state.append(data[state_key])
                     state = np.concatenate(state, axis=1).astype(np.float16)
                     return_dict["state"] = state[0:1]
-                #print(videos[0].shape) #[horizon, H, W, 3]
-                #print(action.shape) #[horizon, action_dim]
-                #print(images[0]) #PIL.Image
-                #print(len(images))# len(dataset.modality_keys["video"])
-                #print(language)
-                #exit()
                 
                 return return_dict
                 

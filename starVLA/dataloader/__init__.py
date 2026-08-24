@@ -50,7 +50,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             vla_dataset,
             batch_size=cfg.datasets.vla_data.per_device_batch_size,
             collate_fn=collate_fn,
-            num_workers=8,
+            num_workers=4,
             # shuffle=True
         )        
         if dist.get_rank() == 0: 
@@ -119,7 +119,7 @@ def build_dataloader(cfg, dataset_py="lerobot_datasets_oxe"): # TODO now here on
             video_dataset,
             batch_size=video_dataset_cfg.per_device_batch_size,
             collate_fn=video_collate_fn,
-            num_workers=16,
+            num_workers=4,
             sampler=train_sampler,
         )        
         return video_train_dataloader

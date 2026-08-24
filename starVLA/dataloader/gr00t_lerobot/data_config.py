@@ -592,7 +592,6 @@ class LeRobotDroidDataConfig:
             "state": state_modality,
             "action": action_modality,
             "language": language_modality,
-            "wm_key_indices": [0, 2]
         }
         return modality_configs
 
@@ -610,19 +609,19 @@ class LeRobotDroidDataConfig:
                 "action.pitch": "min_max",
                 "action.yaw": "min_max",
             },),
-            StateActionTransform(
-                apply_to=self.state_keys,
-                normalization_modes={
-                    "state.roll": "min_max",
-                    "state.pitch": "min_max",
-                    "state.yaw": "min_max",
-                },
-                target_rotations={
-                    "state.roll": "axis_angle",
-                    "state.pitch": "axis_angle",
-                    "state.yaw": "axis_angle",
-                },
-            ),
+            #StateActionTransform(
+            #    apply_to=self.state_keys,
+            #    normalization_modes={
+            #        "state.roll": "min_max",
+            #        "state.pitch": "min_max",
+            #        "state.yaw": "min_max",
+            #    },
+                #target_rotations={
+                #    "state.roll": "axis_angle",
+                #    "state.pitch": "axis_angle",
+                #    "state.yaw": "axis_angle",
+                #},
+            #),
         ]
 
         return ComposedModalityTransform(transforms=transforms)
