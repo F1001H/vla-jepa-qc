@@ -18,13 +18,14 @@ set -euo pipefail
 # at all (openpi's JAX/uv stack is unrelated; this is VLA-JEPA's own
 # PyTorch/HuggingFace "starVLA" framework, with its own venv set up below).
 #
-# Clones directly from our own fork (upstream ginwind/VLA-JEPA + our
-# validated qc/ additions + local env-compat patches, already committed and
-# pushed there) -- no rsync prerequisite needed. All paths (log output,
-# work dir, venv, checkpoints) are absolute, so this can be submitted from
-# any directory on a login node -- it doesn't need to be run from inside
-# any particular git clone:
-#   sbatch /path/to/label_train_simplerenv_qc_critic.slurm
+# Runs IN PLACE against wherever you've already `git clone`d
+# https://github.com/F1001H/vla-jepa-qc -- no re-clone, so no credential
+# problem for the (private) repo when this runs non-interactively under
+# SLURM. Checkpoints/dataset cache/output still go to the shared workspace
+# since those are large; only the repo checkout itself stays wherever you
+# put it. Submit with:
+#   sbatch ~/vla-jepa-qc/slurm/label_train_simplerenv_qc_critic.slurm
+# (or wherever you cloned it -- the script locates itself via $0).
 #
 # Output: a trained critic checkpoint at $OUT_DIR/vlajepa_critic_simplerenv.pt
 # -- rsync it back locally once done:
@@ -32,7 +33,7 @@ set -euo pipefail
 
 SHARED_WS="/mnt/vast/workspaces/VLA_Reinforcement"
 WORK_DIR="$SHARED_WS/fabian/vlajepa_simplerenv_qc"
-REPO_DIR="$WORK_DIR/VLA-JEPA"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CKPT_DIR="$WORK_DIR/checkpoints"
 OUT_DIR="$WORK_DIR/output"
 
@@ -45,14 +46,6 @@ export HF_HUB_DISABLE_XET=1
 
 mkdir -p "$WORK_DIR" "$CKPT_DIR" "$OUT_DIR" "$WORK_DIR/slurm_logs"
 
-# --- 1. Clone our fork (upstream + qc/ additions + env-compat patches already
-#    committed there) + venv. Skip clone if already done by a prior attempt,
-#    otherwise pull latest in case the fork was updated since. ---
-if [ ! -d "$REPO_DIR" ]; then
-    git clone https://github.com/F1001H/vla-jepa-qc.git "$REPO_DIR"
-else
-    git -C "$REPO_DIR" pull --ff-only
-fi
 cd "$REPO_DIR"
 
 if [ ! -d ".venv" ]; then
