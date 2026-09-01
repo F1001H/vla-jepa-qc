@@ -3,6 +3,7 @@
 #SBATCH --partition=all
 #SBATCH --gres=gpu:h100:1                # single-GPU inference-only labeling pass (no FSDP), matches
                                           # the local RTX 5090 run this mirrors -- see qc/label_rewards_simplerenv.py
+#SBATCH --exclude=cn02,cn17              # known-bad/occupied GPUs on these nodes
 #SBATCH --cpus-per-task=14
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00                  # local frame-count estimate: ~50k frames total (1000 episodes,
