@@ -28,26 +28,36 @@ class QChunkCacheDataset(torch.utils.data.Dataset):
     matching train_step.py's single `discount**horizon_length` factor)."""
 
     def __init__(self, cache_path: str, discount: float):
-        data = np.load(cache_path)
+        data = np.load(cache_path, allow_pickle=True)
         self.horizon_length = int(data["_horizon_length"])
-        num_episodes = int(data["_num_episodes"])
         self.discount = discount
 
-        self.index = []  # (ep_key_prefix, t)
+        # Two cache layouts in the wild: LIBERO's (qc/label_rewards.py) keys
+        # episodes by bare integer index 0..num_episodes-1 with a scalar
+        # `_num_episodes`; SimplerEnv's (qc/label_rewards_simplerenv.py)
+        # keys episodes by string like "bridge_0"/"fractal_42" via a
+        # `_done_keys` array (since it spans two datasets). Normalize both
+        # to a list of string keys so the rest of this class doesn't care
+        # which layout it's reading.
+        if "_done_keys" in data:
+            episode_keys = sorted(data["_done_keys"].tolist())
+        else:
+            episode_keys = [str(i) for i in range(int(data["_num_episodes"]))]
+
+        self.index = []  # (episode_key, t)
         self.episodes = {}
-        for ep_idx in range(num_episodes):
-            key = f"state_{ep_idx}"
-            if key not in data:
-                continue  # skipped episode (too short), see label_rewards.py
-            state = data[f"state_{ep_idx}"]
-            action = data[f"action_{ep_idx}"]
-            reward = data[f"reward_{ep_idx}"]
-            embed = data[f"embed_{ep_idx}"]
-            candidates = data[f"candidates_{ep_idx}"]
-            self.episodes[ep_idx] = (state, action, reward, embed, candidates)
+        for key in episode_keys:
+            if f"state_{key}" not in data:
+                continue  # skipped episode (too short), see label_rewards*.py
+            state = data[f"state_{key}"]
+            action = data[f"action_{key}"]
+            reward = data[f"reward_{key}"]
+            embed = data[f"embed_{key}"]
+            candidates = data[f"candidates_{key}"]
+            self.episodes[key] = (state, action, reward, embed, candidates)
             n = state.shape[0]
             for t in range(n - self.horizon_length):
-                self.index.append((ep_idx, t))
+                self.index.append((key, t))
 
     def __len__(self) -> int:
         return len(self.index)
