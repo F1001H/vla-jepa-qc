@@ -54,10 +54,15 @@ class _QWen3_VL_Interface(nn.Module):
 
         qwenvl_config = config.framework.get("qwenvl", {})
         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen3-VL-4B-Instruct")
+        # Was hardcoded to "flash_attention_2" regardless of config, so setting
+        # framework.qwenvl.attn_implementation in config.json/config.yaml had no
+        # effect. Defaulting to "sdpa" here since flash-attn isn't installed in
+        # this environment (would need a from-source build for RTX 5090/Blackwell).
+        attn_implementation = qwenvl_config.get("attn_implementation", "sdpa")
 
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             model_id,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_implementation,
             dtype=torch.bfloat16,
             device_map="cuda",
         )

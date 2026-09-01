@@ -1,3 +1,7 @@
+from __future__ import annotations  # model2libero_interface.py uses list[int]/tuple[...] annotations
+# eagerly evaluated at def/class-body time -- the reused LIBERO sim venv is Python 3.8, which needs
+# PEP 585's lazy-annotation opt-in (3.9+ has it natively) to not raise on those.
+
 from collections import deque
 from typing import Optional, Sequence
 import os

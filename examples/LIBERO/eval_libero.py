@@ -1,3 +1,6 @@
+from __future__ import annotations  # uses PEP 604 `X | Y` annotations (3.10+ syntax) eagerly
+# evaluated at def-time -- the reused LIBERO sim venv is Python 3.8, needs lazy annotations.
+
 import collections
 import dataclasses
 import datetime as dt
@@ -47,6 +50,11 @@ class Args:
     task_suite_name: str = "libero_goal"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize i n sim
     num_trials_per_task: int = 50  # Number of rollouts per task
+    max_tasks_per_suite: int = 0  # 0 = no subsampling (all tasks). LIBERO-Plus's libero_mix
+    # categories have 1000+ tasks each (10,026 total across all 7), which at 1 trial/task
+    # is a multi-day eval -- set this to randomly subsample (seeded by `seed`, so reproducible)
+    # a fixed number of task ids per category instead. Has no effect on standard LIBERO
+    # suites' already-completed runs unless explicitly passed.
     category_value: str = "Background Textures"
             #Background Textures
         #Camera Viewpoints
@@ -85,7 +93,12 @@ def eval_libero(args: Args) -> None:
     else:
         task_suite = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
-    logging.info(f"Task suite: {args.task_suite_name}")
+    task_ids = list(range(num_tasks_in_suite))
+    if args.max_tasks_per_suite and args.max_tasks_per_suite < num_tasks_in_suite:
+        rng = np.random.RandomState(args.seed)
+        task_ids = sorted(rng.choice(num_tasks_in_suite, size=args.max_tasks_per_suite, replace=False).tolist())
+        num_tasks_in_suite = len(task_ids)
+    logging.info(f"Task suite: {args.task_suite_name} ({num_tasks_in_suite} tasks)")
 
     # args.video_out_path = f"{date_base}+{args.job_name}"
     
@@ -114,7 +127,7 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
+    for task_id in tqdm.tqdm(task_ids):
         # Get task
         task = task_suite.get_task(task_id)
 

@@ -43,14 +43,17 @@ class WebsocketClientPolicy:
             
             try:
                 headers = {"Authorization": f"Api-Key {self._api_key}"} if self._api_key else None
+                # ping_interval/ping_timeout dropped: websockets 13.1 (installed in the
+                # reused LIBERO sim venv, which is stuck on Python 3.8) doesn't accept
+                # them as sync.client.connect() kwargs -- they silently fell through into
+                # the underlying socket.create_connection() call instead, raising
+                # TypeError. Default keepalive behavior is fine for a local eval loop.
                 conn = websockets.sync.client.connect(
                     self._uri,
                     compression=None,
                     max_size=None,
                     additional_headers=headers,
                     open_timeout=150,
-                    ping_interval=20,
-                    ping_timeout=20,
                 )
                 metadata = msgpack_numpy.unpackb(conn.recv())
                 return conn, metadata
