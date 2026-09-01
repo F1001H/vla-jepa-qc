@@ -18,14 +18,16 @@ set -euo pipefail
 # at all (openpi's JAX/uv stack is unrelated; this is VLA-JEPA's own
 # PyTorch/HuggingFace "starVLA" framework, with its own venv set up below).
 #
-# Runs IN PLACE against wherever you've already `git clone`d
-# https://github.com/F1001H/vla-jepa-qc -- no re-clone, so no credential
-# problem for the (private) repo when this runs non-interactively under
-# SLURM. Checkpoints/dataset cache/output still go to the shared workspace
-# since those are large; only the repo checkout itself stays wherever you
-# put it. Submit with:
+# Runs IN PLACE against your existing `git clone` of
+# https://github.com/F1001H/vla-jepa-qc (default: $HOME/vla-jepa-qc, see
+# REPO_DIR below) -- no re-clone, so no credential problem for the
+# (private) repo when this runs non-interactively under SLURM. Checkpoints/
+# dataset cache/output still go to the shared workspace since those are
+# large; only the repo checkout itself stays wherever you put it. Submit
+# with:
 #   sbatch ~/vla-jepa-qc/slurm/label_train_simplerenv_qc_critic.slurm
-# (or wherever you cloned it -- the script locates itself via $0).
+# or, if cloned elsewhere:
+#   REPO_DIR=/path/to/vla-jepa-qc sbatch /path/to/vla-jepa-qc/slurm/label_train_simplerenv_qc_critic.slurm
 #
 # Output: a trained critic checkpoint at $OUT_DIR/vlajepa_critic_simplerenv.pt
 # -- rsync it back locally once done:
@@ -33,7 +35,11 @@ set -euo pipefail
 
 SHARED_WS="/mnt/vast/workspaces/VLA_Reinforcement"
 WORK_DIR="$SHARED_WS/fabian/vlajepa_simplerenv_qc"
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# NOT derived from $0/BASH_SOURCE -- sbatch copies the submitted script to
+# /var/spool/slurmd/... on the compute node before running it, so self-
+# location resolves to the spool copy, not the actual clone. Override with
+# `REPO_DIR=/some/path sbatch ...` if you cloned somewhere else.
+REPO_DIR="${REPO_DIR:-$HOME/vla-jepa-qc}"
 CKPT_DIR="$WORK_DIR/checkpoints"
 OUT_DIR="$WORK_DIR/output"
 
