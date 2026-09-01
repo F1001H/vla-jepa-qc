@@ -9,15 +9,19 @@ arrays, so the existing critic-training dataset code needs no changes.
 
 Differences from the LIBERO version:
   - SINGLE camera (no wrist), matching qc/label_rewards_simplerenv.py's
-    confirmed single-image SimplerEnv inference -- V=1 in the video-window
-    stack instead of V=2. UNVERIFIED ASSUMPTION: this presumes the
-    VLA-JEPA-SimplerEnv checkpoint's world model (vj_encoder/vj_predictor)
-    was itself trained/conditioned on single-camera windows, matching the
-    action head. Not yet confirmed against the real checkpoint -- if the
-    world model expects V=2 (e.g. was trained on the same LIBERO-style
-    primary+wrist setup regardless of SimplerEnv's single-camera action
-    head), this will need adjusting. Check for a shape-mismatch error out
-    of vj_predictor on first run.
+    confirmed single-image SimplerEnv inference. The world model still
+    expects V=2 though (matches its LIBERO primary+wrist training setup) --
+    per the VLA-JEPA paper: "when fewer than two camera views are
+    available, we duplicate the world-state representation and concatenate
+    the two copies." So: encode the single camera window once (V=1), then
+    duplicate that embedding to V=2 before the final concatenation, rather
+    than stacking real 2 camera views like LIBERO does. This was flagged as
+    an unverified assumption in an earlier version of this file; the paper
+    confirms it directly, so it's no longer a guess -- but the SPECIFIC
+    mechanism (embedding-level duplication vs. e.g. duplicating raw pixels
+    before encoding) is still an inference from that one sentence, not
+    something the paper spells out at that level of detail. Still worth a
+    sanity check against real intrinsic-reward magnitudes on first run.
   - Reads episodes via qc/label_rewards_simplerenv.py's
     SimplerEnvEpisodeSource (duplicated here rather than imported, same
     reasoning as the LIBERO script: keeps this independently runnable and
@@ -123,8 +127,14 @@ def _intrinsic_reward_at(model, frames: list, task: str, t: int, num_frames: int
 
     window_start = t - num_frames + 1
     primary_window = [np.asarray(frames[window_start + i]) for i in range(num_frames)]
+    # Single camera -> encode as V=1, then duplicate the resulting world-state
+    # representation to V=2 before concatenating -- per the VLA-JEPA paper:
+    # "when fewer than two camera views are available, we duplicate the
+    # world-state representation and concatenate the two copies." (Encoding
+    # once and duplicating the embedding, rather than encoding the same
+    # frames twice through vj_encoder, is equivalent and cheaper.)
     batch_videos = np.stack([np.stack(primary_window)])[None]  # [1, V=1, T, H, W, 3]
-    batch_videos = batch_videos.transpose(0, 1, 2, 5, 3, 4)  # [1, V, T, 3, H, W]
+    batch_videos = batch_videos.transpose(0, 1, 2, 5, 3, 4)  # [1, V=1, T, 3, H, W]
     B_, V, T, C, Himg, Wimg = batch_videos.shape
     batch_videos_flat = batch_videos.reshape(B_ * V, T, C, Himg, Wimg)
     input_videos = torch.cat(
@@ -138,6 +148,8 @@ def _intrinsic_reward_at(model, frames: list, task: str, t: int, num_frames: int
     tokens_per_clip, embed_dim = video_embeddings.shape[1:]
     tokens_per_step = tokens_per_clip // num_temporal_steps
     video_embeddings = video_embeddings.reshape(B_, V, num_temporal_steps, tokens_per_step, embed_dim)
+    video_embeddings = torch.cat([video_embeddings, video_embeddings], dim=1)  # V=1 -> V=2, duplicated copy
+    V = 2
     video_embeddings = video_embeddings.permute(0, 2, 3, 1, 4).contiguous().reshape(
         B_, num_temporal_steps * tokens_per_step, V * embed_dim
     )
