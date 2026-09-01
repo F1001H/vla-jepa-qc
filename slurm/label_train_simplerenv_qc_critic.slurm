@@ -52,6 +52,13 @@ export HF_HUB_DISABLE_XET=1
 
 mkdir -p "$WORK_DIR" "$CKPT_DIR" "$OUT_DIR" "$WORK_DIR/slurm_logs"
 
+echo "=== GPU diagnostics ==="
+echo "Node: $(hostname)"
+echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-<unset>}  SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-<unset>}  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+nvidia-smi --query-gpu=index,name,memory.used,memory.total,memory.free --format=csv
+nvidia-smi --query-compute-apps=pid,process_name,used_memory,gpu_uuid --format=csv
+echo "========================"
+
 cd "$REPO_DIR"
 
 # venv creation/installs must happen on a LOGIN node -- compute nodes mount
