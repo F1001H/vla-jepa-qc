@@ -38,6 +38,10 @@ OUT_DIR="$WORK_DIR/output"
 
 export HF_HOME="${HF_HOME:-$SHARED_WS/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER=1
+# The Xet chunked-transfer backend hit per-IP 429s during local dataset
+# downloads (Bridge/Fractal); fall back to plain LFS to avoid the same
+# failure mode here.
+export HF_HUB_DISABLE_XET=1
 
 mkdir -p "$WORK_DIR" "$CKPT_DIR" "$OUT_DIR" "$WORK_DIR/slurm_logs"
 
