@@ -48,16 +48,23 @@ mkdir -p "$WORK_DIR" "$CKPT_DIR" "$OUT_DIR" "$WORK_DIR/slurm_logs"
 
 cd "$REPO_DIR"
 
-if [ ! -d ".venv" ]; then
-    uv venv --python 3.11 .venv
+# venv creation/installs must happen on a LOGIN node -- compute nodes mount
+# home restrictively (writes into $REPO_DIR/.venv failed with EPERM when
+# attempted from inside this job). Build it once, interactively, before
+# submitting:
+#   cd ~/vla-jepa-qc
+#   uv venv --python 3.11 .venv
+#   uv pip install --python .venv/bin/python torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+#   grep -v -E "^(torchvision)" requirements.txt > /tmp/vlajepa_requirements_filtered.txt
+#   uv pip install --python .venv/bin/python -r /tmp/vlajepa_requirements_filtered.txt
+#   uv pip install --python .venv/bin/python -e .
+#   uv pip install --python .venv/bin/python huggingface_hub[hf_transfer] pyarrow av
+#   touch .venv/.setup_complete
+if [ ! -f ".venv/.setup_complete" ]; then
+    echo "ERROR: $REPO_DIR/.venv is missing or incomplete. Build it from a login node first -- see the comment above this check." >&2
+    exit 1
 fi
 PY="$REPO_DIR/.venv/bin/python"
-
-uv pip install --python "$PY" torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
-grep -v -E "^(torchvision)" requirements.txt > /tmp/vlajepa_requirements_filtered_$$.txt
-uv pip install --python "$PY" -r /tmp/vlajepa_requirements_filtered_$$.txt
-uv pip install --python "$PY" -e .
-uv pip install --python "$PY" huggingface_hub[hf_transfer] pyarrow av
 
 # --- 2. Download checkpoints (shared HF_HOME cache -- may already be warm
 #    from other jobs on this cluster) ---
