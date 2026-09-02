@@ -230,6 +230,15 @@ def main():
              "(this script previously had no checkpointing at all). Overwrites "
              "--output-path in place each time (atomic tmp-then-rename).",
     )
+    p.add_argument(
+        "--shard-id", type=int, default=0,
+        help="This process handles episodes where ep_idx %% --num-shards == --shard-id "
+             "-- run --num-shards separate processes (one per GPU) to parallelize the "
+             "labeling pass, then merge with qc/merge_shards.py. _num_episodes in the "
+             "output is always the GLOBAL total (not this shard's count), so a merged "
+             "cache and downstream code (QChunkCacheDataset) need no special handling.",
+    )
+    p.add_argument("--num-shards", type=int, default=1)
     args = p.parse_args()
 
     model = baseframework.from_pretrained(args.ckpt_path)
@@ -237,6 +246,7 @@ def main():
 
     ds = ParquetLiberoDataset(args.dataset_root)
     num_episodes = ds.num_episodes if args.max_episodes is None else min(args.max_episodes, ds.num_episodes)
+    shard_episodes = [i for i in range(num_episodes) if i % args.num_shards == args.shard_id]
 
     # Resume support: if --output-path already exists (from a previous,
     # interrupted run of THIS script), pick up where it left off instead of
@@ -251,11 +261,16 @@ def main():
         out = {}
         done_episodes = set()
 
-    print(f"Labeling {num_episodes}/{ds.num_episodes} episodes, horizon_length={args.horizon_length}, "
+    print(f"Labeling {len(shard_episodes)}/{num_episodes} episodes "
+          f"(shard {args.shard_id}/{args.num_shards}), horizon_length={args.horizon_length}, "
           f"num_candidates={args.num_candidates}")
 
-    def save_checkpoint(skipped):
-        out["_num_episodes"] = num_episodes - skipped
+    def save_checkpoint():
+        # _num_episodes is the GLOBAL total (an upper bound for downstream
+        # iteration, see QChunkCacheDataset -- it already skips missing
+        # keys), not this shard's count -- so a merged multi-shard cache
+        # needs no special-casing.
+        out["_num_episodes"] = num_episodes
         out["_horizon_length"] = args.horizon_length
         out["_num_candidates"] = args.num_candidates
         out["_ckpt_path"] = args.ckpt_path
@@ -265,7 +280,7 @@ def main():
         tmp_path.replace(out_path)  # atomic on the same filesystem -- never leaves a half-written output file
 
     skipped = 0
-    for ep_idx in tqdm.tqdm(range(num_episodes)):
+    for ep_idx in tqdm.tqdm(shard_episodes):
         if ep_idx in done_episodes:
             continue
         result = label_episode(model, ds, ep_idx, args.horizon_length, args.num_candidates)
@@ -277,10 +292,10 @@ def main():
         done_episodes.add(ep_idx)
 
         if len(done_episodes) % args.checkpoint_every == 0:
-            save_checkpoint(skipped)
+            save_checkpoint()
 
-    save_checkpoint(skipped)
-    print(f"Wrote {num_episodes - skipped} labeled episodes ({skipped} skipped, too short) to {args.output_path}")
+    save_checkpoint()
+    print(f"Wrote {len(done_episodes)} labeled episodes ({skipped} skipped, too short) to {args.output_path}")
 
 
 if __name__ == "__main__":

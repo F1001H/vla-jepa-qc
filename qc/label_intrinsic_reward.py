@@ -147,6 +147,17 @@ def main():
              "machine has had power issues mid-session) loses at most N episodes of work, "
              "not the whole multi-hour run. Overwrites --output-path in place each time.",
     )
+    p.add_argument(
+        "--shard-id", type=int, default=0,
+        help="This process handles episodes where ep_idx %% --num-shards == --shard-id "
+             "-- run --num-shards separate processes (one per GPU) to parallelize the "
+             "labeling pass. Each shard's output is still a FULL cache copy (state/"
+             "action/embed/candidates for every episode, unmodified for episodes outside "
+             "this shard) -- simplest way to keep num-shards=1 identical to the previous "
+             "behavior. Merge with qc/merge_shards.py --mode intrinsic afterward, which "
+             "picks each episode's reward from its OWNING shard's file.",
+    )
+    p.add_argument("--num-shards", type=int, default=1)
     args = p.parse_args()
 
     model = baseframework.from_pretrained(args.ckpt_path).to(f"cuda:{args.cuda}").eval()
@@ -172,7 +183,9 @@ def main():
 
     n_ep = int(cache["_num_episodes"])
     num_episodes = n_ep if args.max_episodes is None else min(args.max_episodes, n_ep)
-    print(f"Labeling intrinsic reward for {num_episodes}/{n_ep} episodes, num_frames={num_frames}")
+    shard_episodes = [i for i in range(num_episodes) if i % args.num_shards == args.shard_id]
+    print(f"Labeling intrinsic reward for {len(shard_episodes)}/{num_episodes} episodes "
+          f"(shard {args.shard_id}/{args.num_shards}), num_frames={num_frames}")
 
     def save_checkpoint():
         cache["_intrinsic_reward_added"] = True
@@ -182,7 +195,7 @@ def main():
         np.savez(tmp_path, **cache)
         tmp_path.replace(out_path)  # atomic on the same filesystem -- never leaves a half-written output file
 
-    for ep_idx in tqdm.tqdm(range(num_episodes)):
+    for ep_idx in tqdm.tqdm(shard_episodes):
         if ep_idx in done_episodes:
             continue
         if f"state_{ep_idx}" not in cache:
