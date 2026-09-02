@@ -48,6 +48,16 @@ DATASET_DIR="$WORK_DIR/datasets/physical-intelligence-libero"
 OUT_DIR="$WORK_DIR/output"
 LOG_DIR="$WORK_DIR/logs"
 NUM_SHARDS=8
+# CRITICAL: without this, each shard process defaults to using ALL visible
+# cores for its own internal thread pools (PyTorch/OpenMP, NumPy's
+# OpenBLAS/MKL, PyArrow's multi-threaded parquet reading) -- with 8 shards
+# doing that simultaneously on one node, they thrash each other for the
+# same 112 cores instead of getting ~14 each. Observed in practice: 0%
+# GPU utilization, 98% CPU in userspace, each process at 1200-1600% CPU,
+# load average 338 (vs 112 real cores) -- a ~30x slowdown (246s/episode
+# instead of the expected ~10-20s) that looked like an I/O bottleneck but
+# was pure CPU oversubscription.
+THREADS_PER_SHARD=$((112 / NUM_SHARDS))
 
 LIBERO_CKPT="$CKPT_DIR/VLA-JEPA-LIBERO-repo/LIBERO/checkpoints/VLA-JEPA-LIBERO.pt"
 
@@ -153,7 +163,10 @@ pids=()
 for i in $(seq 0 $((NUM_SHARDS - 1))); do
     shard_path="$OUT_DIR/qc_cache_libero_subgoal_shard${i}of${NUM_SHARDS}.npz"
     subgoal_shards+=("$shard_path")
-    CUDA_VISIBLE_DEVICES="$i" PYTHONPATH="$REPO_DIR" "$PY" qc/label_rewards.py \
+    CUDA_VISIBLE_DEVICES="$i" \
+    OMP_NUM_THREADS="$THREADS_PER_SHARD" MKL_NUM_THREADS="$THREADS_PER_SHARD" \
+    OPENBLAS_NUM_THREADS="$THREADS_PER_SHARD" NUMEXPR_NUM_THREADS="$THREADS_PER_SHARD" \
+    PYTHONPATH="$REPO_DIR" "$PY" qc/label_rewards.py \
         --dataset-root "$DATASET_DIR" --ckpt-path "$LIBERO_CKPT" \
         --output-path "$shard_path" \
         --shard-id "$i" --num-shards "$NUM_SHARDS" \
@@ -181,7 +194,10 @@ pids=()
 for i in $(seq 0 $((NUM_SHARDS - 1))); do
     shard_path="$OUT_DIR/qc_cache_libero_intrinsic_shard${i}of${NUM_SHARDS}.npz"
     intrinsic_shards+=("$shard_path")
-    CUDA_VISIBLE_DEVICES="$i" PYTHONPATH="$REPO_DIR" "$PY" qc/label_intrinsic_reward.py \
+    CUDA_VISIBLE_DEVICES="$i" \
+    OMP_NUM_THREADS="$THREADS_PER_SHARD" MKL_NUM_THREADS="$THREADS_PER_SHARD" \
+    OPENBLAS_NUM_THREADS="$THREADS_PER_SHARD" NUMEXPR_NUM_THREADS="$THREADS_PER_SHARD" \
+    PYTHONPATH="$REPO_DIR" "$PY" qc/label_intrinsic_reward.py \
         --dataset-root "$DATASET_DIR" --ckpt-path "$LIBERO_CKPT" \
         --input-cache "$OUT_DIR/qc_cache_libero_full.npz" \
         --output-path "$shard_path" \
