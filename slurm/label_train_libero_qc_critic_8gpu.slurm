@@ -72,6 +72,7 @@ fi
 PY="$REPO_DIR/.venv/bin/python"
 
 # --- 0. Download checkpoint + dataset if missing (idempotent) ---
+CKPT_PATCHED_MARKER="$CKPT_DIR/.libero_ckpt_patched"
 if [ ! -f "$LIBERO_CKPT" ]; then
     echo "=== Downloading VLA-JEPA-LIBERO checkpoint ==="
     "$PY" -m huggingface_hub.commands.huggingface_cli download ginwind/VLA-JEPA \
@@ -81,6 +82,52 @@ if [ ! -d "$DATASET_DIR/data" ]; then
     echo "=== Downloading physical-intelligence/libero dataset ==="
     "$PY" -m huggingface_hub.commands.huggingface_cli download physical-intelligence/libero \
         --repo-type dataset --local-dir "$DATASET_DIR"
+fi
+
+# --- Base backbone checkpoints + config patch ---
+# The LIBERO checkpoint's config.json/config.yaml reference the base
+# Qwen3-VL/V-JEPA2 checkpoints via ${oc.env:WORKSPACE}-style interpolation
+# pointing at wherever VLA-JEPA's own authors trained this (env var that
+# doesn't exist here) -- same issue label_train_simplerenv_qc_critic.slurm
+# already patches around for its own checkpoint. Confirmed via the local,
+# already-working copy of this exact checkpoint: base_vlm/attn_implementation/
+# base_encoder rewritten to plain absolute paths fixes it.
+if [ ! -f "$CKPT_PATCHED_MARKER" ]; then
+    echo "=== Downloading base Qwen3-VL-2B-Instruct + V-JEPA2 checkpoints ==="
+    "$PY" -m huggingface_hub.commands.huggingface_cli download Qwen/Qwen3-VL-2B-Instruct \
+        --local-dir "$CKPT_DIR/Qwen3-VL-2B-Instruct"
+    "$PY" -m huggingface_hub.commands.huggingface_cli download facebook/vjepa2-vitl-fpc64-256 \
+        --local-dir "$CKPT_DIR/vjepa2-vitl-fpc64-256"
+
+    echo "=== Patching LIBERO checkpoint config ==="
+    python3 - "$CKPT_DIR" <<'PYEOF'
+import json
+import sys
+ckpt_dir = sys.argv[1]
+cfg_path = f"{ckpt_dir}/VLA-JEPA-LIBERO-repo/LIBERO/config.json"
+with open(cfg_path) as f:
+    cfg = json.load(f)
+cfg["framework"]["qwenvl"]["base_vlm"] = f"{ckpt_dir}/Qwen3-VL-2B-Instruct"
+cfg["framework"]["qwenvl"]["attn_implementation"] = "sdpa"
+cfg["framework"]["vj2_model"]["base_encoder"] = f"{ckpt_dir}/vjepa2-vitl-fpc64-256"
+with open(cfg_path, "w") as f:
+    json.dump(cfg, f, indent=4)
+print("Patched LIBERO config.json")
+PYEOF
+
+    python3 - "$CKPT_DIR" <<'PYEOF'
+import re
+import sys
+ckpt_dir = sys.argv[1]
+cfg_path = f"{ckpt_dir}/VLA-JEPA-LIBERO-repo/LIBERO/config.yaml"
+text = open(cfg_path).read()
+text = re.sub(r"base_vlm: .*", f"base_vlm: {ckpt_dir}/Qwen3-VL-2B-Instruct", text, count=1)
+text = re.sub(r"attn_implementation: .*", "attn_implementation: sdpa", text, count=1)
+text = re.sub(r"base_encoder: .*", f"base_encoder: {ckpt_dir}/vjepa2-vitl-fpc64-256", text, count=1)
+open(cfg_path, "w").write(text)
+print("Patched LIBERO config.yaml")
+PYEOF
+    touch "$CKPT_PATCHED_MARKER"
 fi
 
 # --- Stage 1: sharded subgoal labeling (fixed detector), 8 parallel GPUs ---
