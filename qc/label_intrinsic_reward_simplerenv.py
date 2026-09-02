@@ -169,6 +169,14 @@ def main():
     p.add_argument("--ckpt-path", required=True)
     p.add_argument("--input-cache", required=True)
     p.add_argument("--output-path", required=True)
+    p.add_argument(
+        "--reward-mode", choices=["combined", "intrinsic_only"], default="combined",
+        help="'combined' (default): total = subgoal + intrinsic, same as before. "
+             "'intrinsic_only': total = intrinsic alone, subgoal reward (including "
+             "the unconditional terminal +1 bonus) fully zeroed out -- isolates "
+             "what JEPA prediction-error alone contributes, for the reward-"
+             "composition ablation (subgoal-only vs intrinsic-only vs combined).",
+    )
     p.add_argument("--cuda", type=int, default=0)
     p.add_argument(
         "--checkpoint-every", type=int, default=25,
@@ -200,6 +208,7 @@ def main():
     def save_checkpoint():
         cache["_intrinsic_reward_added"] = True
         cache["_intrinsic_num_frames"] = num_frames
+        cache["_reward_mode"] = args.reward_mode
         cache["_intrinsic_done_keys"] = np.array(sorted(done_keys), dtype=object)
         tmp_path = out_path.with_suffix(".tmp.npz")
         np.savez(tmp_path, **cache)
@@ -218,10 +227,11 @@ def main():
         frames, task = sources[dataset_key].load_episode(ep_idx)
         n = len(frames)
         subgoal_reward = cache[f"reward_{key}"]
-        total_reward = subgoal_reward.copy()
+        base_reward = subgoal_reward if args.reward_mode == "combined" else np.zeros_like(subgoal_reward)
+        total_reward = base_reward.copy()
         for t in range(num_frames - 1, n):
             intrinsic = _intrinsic_reward_at(model, frames, task, t, num_frames)
-            total_reward[t] = subgoal_reward[t] + intrinsic
+            total_reward[t] = base_reward[t] + intrinsic
         cache[f"reward_{key}"] = total_reward
         done_keys.add(key)
 
@@ -229,7 +239,7 @@ def main():
             save_checkpoint()
 
     save_checkpoint()
-    print(f"Wrote combined (subgoal + intrinsic) reward cache to {args.output_path}")
+    print(f"Wrote {args.reward_mode} reward cache to {args.output_path}")
 
 
 if __name__ == "__main__":

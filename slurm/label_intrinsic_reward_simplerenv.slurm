@@ -40,6 +40,11 @@ set -euo pipefail
 #   CACHE_PATH=$OUT_DIR/qc_cache_simplerenv_intrinsic.npz \
 #   OUTPUT_NAME=vlajepa_critic_simplerenv_intrinsic.pt \
 #   sbatch ~/vla-jepa-qc/slurm/train_simplerenv_qc_critic.slurm
+#
+# For the reward-composition ablation (subgoal-only vs intrinsic-only vs
+# combined), use label_intrinsic_only_reward_simplerenv.slurm instead of
+# overriding REWARD_MODE here directly -- it has the right defaults baked
+# in so there's nothing to remember.
 
 SHARED_WS="/mnt/vast/workspaces/VLA_Reinforcement"
 WORK_DIR="$SHARED_WS/fabian/vlajepa_simplerenv_qc"
@@ -50,6 +55,7 @@ OUT_DIR="$WORK_DIR/output"
 SIMPLERENV_CKPT="${SIMPLERENV_CKPT:-$CKPT_DIR/VLA-JEPA-SimplerEnv-repo/SimplerEnv/checkpoints/VLA-JEPA-SimplerEnv.pt}"
 INPUT_CACHE="${INPUT_CACHE:-$OUT_DIR/qc_cache_simplerenv.npz}"
 OUTPUT_CACHE="${OUTPUT_CACHE:-$OUT_DIR/qc_cache_simplerenv_intrinsic.npz}"
+REWARD_MODE="${REWARD_MODE:-combined}"   # or "intrinsic_only" -- see qc/label_intrinsic_reward_simplerenv.py
 
 export HF_HOME="${HF_HOME:-$SHARED_WS/huggingface}"
 export HF_HUB_ENABLE_HF_TRANSFER=1
@@ -80,11 +86,12 @@ if [ ! -f "$SIMPLERENV_CKPT" ]; then
     exit 1
 fi
 
-echo "=== Labeling intrinsic reward on top of $INPUT_CACHE ==="
+echo "=== Labeling intrinsic reward (mode=$REWARD_MODE) on top of $INPUT_CACHE ==="
 PYTHONPATH="$REPO_DIR" "$PY" qc/label_intrinsic_reward_simplerenv.py \
     --ckpt-path "$SIMPLERENV_CKPT" \
     --input-cache "$INPUT_CACHE" \
     --output-path "$OUTPUT_CACHE" \
+    --reward-mode "$REWARD_MODE" \
     --checkpoint-every 25 --cuda 0
 
-echo "Done. Combined (subgoal+intrinsic) cache: $OUTPUT_CACHE"
+echo "Done. Cache ($REWARD_MODE): $OUTPUT_CACHE"
