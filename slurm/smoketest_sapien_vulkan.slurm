@@ -46,7 +46,8 @@ echo "========================"
 
 echo "=== Tier 1: NVIDIA Vulkan ICD file ==="
 found_icd=0
-for f in /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json; do
+for f in /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json \
+         /usr/share/vulkan/icd.d/nvidia_icd.x86_64.json /etc/vulkan/icd.d/nvidia_icd.x86_64.json; do
     if [ -f "$f" ]; then
         echo "Found: $f"
         cat "$f"
@@ -75,8 +76,16 @@ fi
 export SVULKAN2_CPU_COPY=1
 export SVULKAN2_DISABLE_DENOISER=1
 export DISPLAY=
+# Under SLURM, stdout goes to a file rather than a TTY, so Python defaults
+# to full block buffering -- without this, print() output (including the
+# "Creating engine..."/"Creating scene..." progress lines below) sits
+# invisible in a buffer until the process exits, making a genuine hang
+# indistinguishable from normal-but-silent progress. Also wrapped in an
+# explicit `timeout` so a real Vulkan-init hang reports clearly as its own
+# timeout rather than only being caught by SLURM's job-level time limit.
+export PYTHONUNBUFFERED=1
 
-"$VENV_DIR/bin/python" - <<'PYEOF'
+timeout 300 "$VENV_DIR/bin/python" -u - <<'PYEOF'
 import warnings
 warnings.filterwarnings("ignore")
 import numpy as np
@@ -117,6 +126,8 @@ sapien_status=$?
 echo "=== Result ==="
 if [ "$sapien_status" -eq 0 ]; then
     echo "SAPIEN/Vulkan rendering WORKS on this node ($(hostname)) -- safe to proceed with full SimplerEnv setup."
+elif [ "$sapien_status" -eq 124 ]; then
+    echo "SAPIEN/Vulkan rendering HUNG on this node ($(hostname)) -- killed after 300s with no output past the ICD/venv setup. Likely a genuine Vulkan device-enumeration/driver hang, not just slow first-run compilation."
 else
     echo "SAPIEN/Vulkan rendering FAILED on this node ($(hostname)) -- see traceback above before investing in the full SimplerEnv port."
 fi
