@@ -85,13 +85,22 @@ if [ ! -d "$DATASET_DIR/data" ]; then
 fi
 
 # --- Base backbone checkpoints + config patch ---
-# The LIBERO checkpoint's config.json/config.yaml reference the base
-# Qwen3-VL/V-JEPA2 checkpoints via ${oc.env:WORKSPACE}-style interpolation
-# pointing at wherever VLA-JEPA's own authors trained this (env var that
-# doesn't exist here) -- same issue label_train_simplerenv_qc_critic.slurm
-# already patches around for its own checkpoint. Confirmed via the local,
-# already-working copy of this exact checkpoint: base_vlm/attn_implementation/
-# base_encoder rewritten to plain absolute paths fixes it.
+# The LIBERO checkpoint's config.json/config.yaml reference several paths
+# via ${oc.env:WORKSPACE}-style interpolation pointing at wherever
+# VLA-JEPA's own authors trained this (env var that doesn't exist here) --
+# same issue label_train_simplerenv_qc_critic.slurm already patches around
+# for its own checkpoint. Confirmed via the local, already-working copy of
+# this exact checkpoint: base_vlm/attn_implementation/base_encoder AND
+# datasets.vla_data.data_root_dir all rewritten to plain absolute paths,
+# zero remaining ${...} interpolations left (grepped to confirm). The
+# WORKSPACE export below is a belt-and-suspenders catch-all in case a
+# field surfaces later that neither this patch nor the local reference
+# copy caught -- OmegaConf's resolve=True walks the ENTIRE config tree
+# (see qc/label_rewards.py's traceback), so a single unresolved
+# interpolation ANYWHERE crashes model loading even for fields never
+# actually used downstream (data_root_dir isn't -- label_rewards.py takes
+# --dataset-root explicitly).
+export WORKSPACE="$WORK_DIR"
 if [ ! -f "$CKPT_PATCHED_MARKER" ]; then
     echo "=== Downloading base Qwen3-VL-2B-Instruct + V-JEPA2 checkpoints ==="
     "$PY" -m huggingface_hub.commands.huggingface_cli download Qwen/Qwen3-VL-2B-Instruct \
@@ -100,33 +109,40 @@ if [ ! -f "$CKPT_PATCHED_MARKER" ]; then
         --local-dir "$CKPT_DIR/vjepa2-vitl-fpc64-256"
 
     echo "=== Patching LIBERO checkpoint config ==="
-    python3 - "$CKPT_DIR" <<'PYEOF'
+    python3 - "$CKPT_DIR" "$DATASET_DIR" <<'PYEOF'
 import json
 import sys
-ckpt_dir = sys.argv[1]
+ckpt_dir, dataset_dir = sys.argv[1], sys.argv[2]
 cfg_path = f"{ckpt_dir}/VLA-JEPA-LIBERO-repo/LIBERO/config.json"
 with open(cfg_path) as f:
     cfg = json.load(f)
 cfg["framework"]["qwenvl"]["base_vlm"] = f"{ckpt_dir}/Qwen3-VL-2B-Instruct"
 cfg["framework"]["qwenvl"]["attn_implementation"] = "sdpa"
 cfg["framework"]["vj2_model"]["base_encoder"] = f"{ckpt_dir}/vjepa2-vitl-fpc64-256"
+cfg["datasets"]["vla_data"]["data_root_dir"] = dataset_dir
 with open(cfg_path, "w") as f:
     json.dump(cfg, f, indent=4)
 print("Patched LIBERO config.json")
 PYEOF
 
-    python3 - "$CKPT_DIR" <<'PYEOF'
+    python3 - "$CKPT_DIR" "$DATASET_DIR" <<'PYEOF'
 import re
 import sys
-ckpt_dir = sys.argv[1]
+ckpt_dir, dataset_dir = sys.argv[1], sys.argv[2]
 cfg_path = f"{ckpt_dir}/VLA-JEPA-LIBERO-repo/LIBERO/config.yaml"
 text = open(cfg_path).read()
 text = re.sub(r"base_vlm: .*", f"base_vlm: {ckpt_dir}/Qwen3-VL-2B-Instruct", text, count=1)
 text = re.sub(r"attn_implementation: .*", "attn_implementation: sdpa", text, count=1)
 text = re.sub(r"base_encoder: .*", f"base_encoder: {ckpt_dir}/vjepa2-vitl-fpc64-256", text, count=1)
+text = re.sub(r"data_root_dir: .*", f"data_root_dir: {dataset_dir}", text, count=1)
 open(cfg_path, "w").write(text)
 print("Patched LIBERO config.yaml")
 PYEOF
+    remaining=$(grep -o '\${[^}]*}' "$CKPT_DIR/VLA-JEPA-LIBERO-repo/LIBERO/config.yaml" || true)
+    if [ -n "$remaining" ]; then
+        echo "WARNING: config.yaml still has unresolved interpolations after patching: $remaining" >&2
+        echo "(WORKSPACE env var is set as a catch-all, so this may still work -- but check if it doesn't.)" >&2
+    fi
     touch "$CKPT_PATCHED_MARKER"
 fi
 
