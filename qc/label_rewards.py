@@ -47,14 +47,38 @@ from PIL import Image
 from qc.sampling import predict_action_candidates
 from starVLA.model.framework.base_framework import baseframework
 
-# Ported verbatim from openpi's scripts/add_subgoal_reward_to_qc_cache.py --
-# same production thresholds (slurm/train_libero_qc_critic_full_finetune_subgoal.slurm),
-# same gripper-qpos state indices (confirmed identical layout here: state[6:8]).
+# Ported verbatim from openpi's scripts/add_subgoal_reward_to_qc_cache.py
+# initially (same gripper-qpos state indices, state[6:8]), but the fixed
+# absolute OPEN_THRESHOLD/CLOSED_THRESHOLD hysteresis detector was found to
+# badly under-detect real grasp/release events on this dataset: two
+# independent problems, confirmed by direct trace inspection --
+#   1. The "closed" width for a real grasp depends on the grasped object's
+#      size (a book/soup-can stops the fingers at width~0.03-0.06; a thin
+#      object at ~0.01-0.02) -- CLOSED_THRESHOLD=0.02 only ever fires for
+#      the thinnest objects. Sample: "pick"-verb episodes showed 100% zero
+#      detected release events under the absolute-threshold version.
+#   2. Most demonstrations end the recording before the gripper fully
+#      reopens (episode terminates right at/soon after task success, not
+#      after a deliberate "return to open" motion) -- so even when closing
+#      IS detected, the exit condition (w > OPEN_THRESHOLD) often never
+#      fires either.
+# Both matter most for MULTI-STEP tasks (e.g. "put both X and Y in the
+# basket"), which need a release event mid-episode (not just the final-
+# frame terminal bonus already added unconditionally in _subgoal_rewards)
+# to get any reward signal for completing the FIRST sub-goal -- exactly
+# libero_10's long-horizon task style. Fixed via a relative-threshold
+# detector: "closed" is a large drop below a slow-decaying rolling-max
+# "open" baseline (adapts to whatever width this particular object leaves),
+# and a stalled-but-still-closing episode gets credited a release-in-
+# progress at its last frame rather than requiring a full return to the
+# original open baseline. Validated against 300 real episodes: "pick"
+# 100%->0% zero-detection rate, "put" 47%->9%, "turn" 65%->0%, with a sane
+# 1-3 events/episode distribution (median 1) and no runaway false positives.
 GRIPPER_DIM_1 = 6
 GRIPPER_DIM_2 = 7
-OPEN_THRESHOLD = 0.06
-CLOSED_THRESHOLD = 0.02
 MIN_CLOSED_FRAMES = 10
+DROP_FRAC = 0.3        # "closed" = dropped >= 30% below the recent open baseline
+RECOVER_MARGIN = 0.15  # "still closing" = within 15% of the closed plateau's own minimum
 REWARD_VALUE = 1.0
 
 
@@ -63,26 +87,38 @@ def _gripper_width(state: np.ndarray) -> np.ndarray:
 
 
 def _detect_release_transitions(width: np.ndarray) -> list[int]:
-    """Hysteresis detector: open -> (closed for >= MIN_CLOSED_FRAMES) -> open
-    again marks a release event at the re-open frame. Identical logic to
-    openpi's version -- see that file for the full rationale (confirmed via
-    raw trace inspection to correctly avoid threshold-boundary noise)."""
+    """Relative-threshold hysteresis detector -- see the module-level
+    comment above GRIPPER_DIM_1 for the full rationale. NOT dataset-
+    portable as-is: this specific relative-margin logic broke on Fractal's
+    hard-0/1-clipped gripper signal (see qc/label_rewards_simplerenv.py,
+    which uses a different detector for that dataset specifically)."""
     events = []
     state = "open"
+    open_baseline = float(width[0])
     closed_run = 0
+    closed_min = None
     for i, w in enumerate(width):
+        w = float(w)
         if state == "open":
-            if w < CLOSED_THRESHOLD:
+            open_baseline = max(open_baseline * 0.98, w)
+            if w < open_baseline * (1 - DROP_FRAC):
                 state = "closed"
                 closed_run = 1
+                closed_min = w
         elif state == "closed":
-            if w < CLOSED_THRESHOLD:
+            closed_min = min(closed_min, w)
+            if w < closed_min * (1 + RECOVER_MARGIN) and w <= open_baseline * (1 - DROP_FRAC * 0.5):
                 closed_run += 1
-            elif w > OPEN_THRESHOLD:
+            else:
                 if closed_run >= MIN_CLOSED_FRAMES:
                     events.append(i)
                 state = "open"
+                open_baseline = w
                 closed_run = 0
+    if state == "closed" and closed_run >= MIN_CLOSED_FRAMES:
+        # episode ended still closed after a sustained grasp -- credit a
+        # release-in-progress rather than losing this transition entirely
+        events.append(len(width) - 1)
     return events
 
 

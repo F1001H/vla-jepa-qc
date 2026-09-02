@@ -51,6 +51,30 @@ CLOSED_THRESHOLD = 0.3
 MIN_CLOSED_FRAMES = 3  # much lower than LIBERO's 10 -- these episodes are 25-115 frames, not 75-505
 REWARD_VALUE = 1.0
 
+# Bridge and Fractal need DIFFERENT release-detection strategies, confirmed
+# by direct trace inspection (see qc/label_rewards.py's much longer comment
+# for the LIBERO version of this same investigation -- same root problem,
+# same fix, ported here):
+#   - Bridge: like LIBERO, real "closed" values are object-width-dependent
+#     (e.g. grasping broccoli/chocolate only closes the gripper to
+#     ~0.55-0.76, never crossing CLOSED_THRESHOLD=0.3) -- absolute
+#     thresholds badly under-detect (78% of "pick" episodes showed ZERO
+#     release events). Needs the same relative-threshold detector as
+#     LIBERO: "closed" = dropped >= DROP_FRAC below a rolling open
+#     baseline, credits a release-in-progress at episode end.
+#   - Fractal: the OPPOSITE problem -- its signal is hard-clipped to
+#     exactly 0.0/1.0 (some episodes even START at 0.0, gripper already
+#     closed), which breaks the relative detector's recover-margin check
+#     (anything times (1+margin) is still 0 once closed_min hits exactly
+#     0, so it can never re-detect "still closed" and fires spurious
+#     mid-grasp releases). Fractal's absolute thresholds were ALREADY
+#     well-calibrated (0-6% zero-detection rate for pick/place/move) --
+#     only needed the same "credit an episode-end release-in-progress"
+#     addition, no threshold changes.
+# Validated against 400-500 real episodes per dataset before landing this.
+DROP_FRAC = 0.3
+RECOVER_MARGIN = 0.15
+
 DATASETS = {
     "bridge": {
         "repo_id": "IPEC-COMMUNITY/bridge_orig_lerobot",
@@ -70,10 +94,10 @@ def _gripper_signal(state: np.ndarray) -> np.ndarray:
     return state[:, 7]
 
 
-def _detect_release_transitions(signal: np.ndarray) -> list[int]:
-    """Same hysteresis structure as LIBERO's detector (open -> closed for
-    >= MIN_CLOSED_FRAMES -> open again marks a release at the re-open
-    frame), recalibrated thresholds/duration for this signal/dataset."""
+def _detect_release_transitions_absolute(signal: np.ndarray) -> list[int]:
+    """Fractal: absolute-threshold hysteresis, already well-calibrated (see
+    module comment above DROP_FRAC), plus crediting a release-in-progress
+    if the episode ends still closed after a sustained grasp."""
     events = []
     state = "open"
     closed_run = 0
@@ -90,14 +114,50 @@ def _detect_release_transitions(signal: np.ndarray) -> list[int]:
                     events.append(i)
                 state = "open"
                 closed_run = 0
+    if state == "closed" and closed_run >= MIN_CLOSED_FRAMES:
+        events.append(len(signal) - 1)
     return events
 
 
-def _subgoal_rewards(state: np.ndarray) -> np.ndarray:
+def _detect_release_transitions_relative(signal: np.ndarray) -> list[int]:
+    """Bridge: relative-threshold hysteresis -- see module comment above
+    DROP_FRAC. Identical algorithm to qc/label_rewards.py's LIBERO
+    detector; NOT used for Fractal (breaks on its hard-0/1-clipped
+    signal, see module comment)."""
+    events = []
+    state = "open"
+    open_baseline = float(signal[0])
+    closed_run = 0
+    closed_min = None
+    for i, w in enumerate(signal):
+        w = float(w)
+        if state == "open":
+            open_baseline = max(open_baseline * 0.98, w)
+            if w < open_baseline * (1 - DROP_FRAC):
+                state = "closed"
+                closed_run = 1
+                closed_min = w
+        elif state == "closed":
+            closed_min = min(closed_min, w)
+            if w < closed_min * (1 + RECOVER_MARGIN) and w <= open_baseline * (1 - DROP_FRAC * 0.5):
+                closed_run += 1
+            else:
+                if closed_run >= MIN_CLOSED_FRAMES:
+                    events.append(i)
+                state = "open"
+                open_baseline = w
+                closed_run = 0
+    if state == "closed" and closed_run >= MIN_CLOSED_FRAMES:
+        events.append(len(signal) - 1)
+    return events
+
+
+def _subgoal_rewards(state: np.ndarray, dataset_key: str) -> np.ndarray:
     n = state.shape[0]
     reward = np.zeros(n, dtype=np.float32)
     signal = _gripper_signal(state)
-    for e in _detect_release_transitions(signal):
+    detector = _detect_release_transitions_relative if dataset_key == "bridge" else _detect_release_transitions_absolute
+    for e in detector(signal):
         reward[e] = REWARD_VALUE
     reward[n - 1] = REWARD_VALUE
     return reward
@@ -156,7 +216,7 @@ def label_episode(model, source: SimplerEnvEpisodeSource, ep_idx: int, horizon_l
     if n <= horizon_length:
         return None
 
-    reward = _subgoal_rewards(state)
+    reward = _subgoal_rewards(state, source.dataset_key)
 
     embed_dim = None
     embeds = None
