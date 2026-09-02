@@ -223,6 +223,13 @@ def main():
     p.add_argument("--num-candidates", type=int, default=8)
     p.add_argument("--max-episodes", type=int, default=None)
     p.add_argument("--cuda", type=int, default=0)
+    p.add_argument(
+        "--checkpoint-every", type=int, default=25,
+        help="Write partial progress to --output-path every N episodes, so a crash "
+             "loses at most N episodes of work instead of the whole multi-hour run "
+             "(this script previously had no checkpointing at all). Overwrites "
+             "--output-path in place each time (atomic tmp-then-rename).",
+    )
     args = p.parse_args()
 
     model = baseframework.from_pretrained(args.ckpt_path)
@@ -230,24 +237,49 @@ def main():
 
     ds = ParquetLiberoDataset(args.dataset_root)
     num_episodes = ds.num_episodes if args.max_episodes is None else min(args.max_episodes, ds.num_episodes)
+
+    # Resume support: if --output-path already exists (from a previous,
+    # interrupted run of THIS script), pick up where it left off instead of
+    # starting over. _done_episodes tracks which episode indices are
+    # finished, mirroring qc/label_rewards_simplerenv.py's _done_keys.
+    out_path = Path(args.output_path)
+    if out_path.exists():
+        out = dict(np.load(out_path, allow_pickle=True))
+        done_episodes = set(out.get("_done_episodes", np.array([], dtype=np.int64)).tolist())
+        print(f"Resuming from {out_path}: {len(done_episodes)} episodes already done.")
+    else:
+        out = {}
+        done_episodes = set()
+
     print(f"Labeling {num_episodes}/{ds.num_episodes} episodes, horizon_length={args.horizon_length}, "
           f"num_candidates={args.num_candidates}")
 
-    out = {}
+    def save_checkpoint(skipped):
+        out["_num_episodes"] = num_episodes - skipped
+        out["_horizon_length"] = args.horizon_length
+        out["_num_candidates"] = args.num_candidates
+        out["_ckpt_path"] = args.ckpt_path
+        out["_done_episodes"] = np.array(sorted(done_episodes), dtype=np.int64)
+        tmp_path = out_path.with_suffix(".tmp.npz")
+        np.savez(tmp_path, **out)
+        tmp_path.replace(out_path)  # atomic on the same filesystem -- never leaves a half-written output file
+
     skipped = 0
     for ep_idx in tqdm.tqdm(range(num_episodes)):
+        if ep_idx in done_episodes:
+            continue
         result = label_episode(model, ds, ep_idx, args.horizon_length, args.num_candidates)
         if result is None:
             skipped += 1
             continue
         for k, v in result.items():
             out[f"{k}_{ep_idx}"] = v
+        done_episodes.add(ep_idx)
 
-    out["_num_episodes"] = num_episodes - skipped
-    out["_horizon_length"] = args.horizon_length
-    out["_num_candidates"] = args.num_candidates
-    out["_ckpt_path"] = args.ckpt_path
-    np.savez(args.output_path, **out)
+        if len(done_episodes) % args.checkpoint_every == 0:
+            save_checkpoint(skipped)
+
+    save_checkpoint(skipped)
     print(f"Wrote {num_episodes - skipped} labeled episodes ({skipped} skipped, too short) to {args.output_path}")
 
 
