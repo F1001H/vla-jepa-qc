@@ -105,8 +105,14 @@ if [ ! -f "$SIM_VENV_DIR/.setup_complete" ]; then
 fi
 SIM_PY="$SIM_VENV_DIR/bin/python"
 
-# --- libmagickwand SYSTEM library check (Sensor Noise category needs it) ---
+# --- libmagickwand SYSTEM library check (only Sensor Noise needs it) ---
+# Missing this does NOT fail the job -- it just skips Sensor Noise and runs
+# the other 6 categories, so one missing system dependency (which needs
+# sudo, and per Fabian is unlikely to be present on this cluster) doesn't
+# block everything else. Pick up Sensor Noise separately later, e.g.
+# locally where it's already confirmed working.
 echo "=== Checking for libmagickwand ==="
+HAVE_LIBMAGICKWAND=1
 if ! ldconfig -p 2>/dev/null | grep -qi "libMagickWand"; then
     echo "libMagickWand not found via ldconfig -- trying conda-forge as a no-sudo fallback..."
     if command -v conda >/dev/null 2>&1 || command -v mamba >/dev/null 2>&1; then
@@ -117,16 +123,19 @@ if ! ldconfig -p 2>/dev/null | grep -qi "libMagickWand"; then
         fi
         export LD_LIBRARY_PATH="$CONDA_ENV_DIR/lib:${LD_LIBRARY_PATH:-}"
         if ! (ldconfig -p 2>/dev/null | grep -qi "libMagickWand"; find "$CONDA_ENV_DIR/lib" -iname "libMagickWand*" 2>/dev/null | grep -q .); then
-            echo "ERROR: conda-forge fallback didn't produce a usable libMagickWand either. Sensor Noise category needs libmagickwand-dev installed system-wide (sudo apt-get install libmagickwand-dev) -- ask cluster admins, or skip Sensor Noise by removing it from CATEGORIES below." >&2
-            exit 1
+            HAVE_LIBMAGICKWAND=0
+        else
+            echo "Using conda-forge imagemagick at $CONDA_ENV_DIR"
         fi
-        echo "Using conda-forge imagemagick at $CONDA_ENV_DIR"
     else
-        echo "ERROR: libMagickWand missing and no conda/mamba available for a no-sudo fallback. Sensor Noise category needs libmagickwand-dev installed system-wide -- ask cluster admins, or skip Sensor Noise by removing it from CATEGORIES below." >&2
-        exit 1
+        HAVE_LIBMAGICKWAND=0
     fi
 fi
-uv pip install --python "$SIM_PY" Wand==0.7.2
+if [ "$HAVE_LIBMAGICKWAND" -eq 0 ]; then
+    echo "WARNING: libMagickWand unavailable (no sudo access to install libmagickwand-dev, no conda/mamba fallback either) -- SKIPPING Sensor Noise category. Run it separately (e.g. locally, where it's already confirmed working) to complete the full 7-category benchmark." >&2
+else
+    uv pip install --python "$SIM_PY" Wand==0.7.2
+fi
 
 # --- LIBERO-Plus benchmark clone + assets (separate from base LIBERO's clone) ---
 if [ ! -d "$LIBERO_PLUS_BENCH_DIR" ]; then
@@ -159,7 +168,10 @@ fi
 RESULTS_FILE="$WORK_DIR/vlajepa_libero_plus_${RUN_TAG}_eval_results.txt"
 touch "$RESULTS_FILE"
 
-CATEGORIES=("Background Textures" "Camera Viewpoints" "Language Instructions" "Light Conditions" "Objects Layout" "Robot Initial States" "Sensor Noise")
+CATEGORIES=("Background Textures" "Camera Viewpoints" "Language Instructions" "Light Conditions" "Objects Layout" "Robot Initial States")
+if [ "$HAVE_LIBMAGICKWAND" -eq 1 ]; then
+    CATEGORIES+=("Sensor Noise")
+fi
 base_port=15283
 
 wait_for_port () {
@@ -258,5 +270,9 @@ for category in "${CATEGORIES[@]}"; do
     echo "=== [$(date)] Finished category: $category ===" | tee -a "$LOG_DIR/driver_libero_plus_${RUN_TAG}.log"
 done
 
-echo "=== [$(date)] ALL LIBERO-PLUS CATEGORIES DONE ===" | tee -a "$LOG_DIR/driver_libero_plus_${RUN_TAG}.log"
+if [ "$HAVE_LIBMAGICKWAND" -eq 0 ]; then
+    echo "=== [$(date)] 6/7 CATEGORIES DONE (Sensor Noise skipped -- no libmagickwand) ===" | tee -a "$LOG_DIR/driver_libero_plus_${RUN_TAG}.log"
+else
+    echo "=== [$(date)] ALL 7 LIBERO-PLUS CATEGORIES DONE ===" | tee -a "$LOG_DIR/driver_libero_plus_${RUN_TAG}.log"
+fi
 echo "Results: $RESULTS_FILE"
