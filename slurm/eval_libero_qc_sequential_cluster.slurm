@@ -124,18 +124,21 @@ if [ ! -f "$SIM_VENV_DIR/.setup_complete" ]; then
     # ModuleNotFoundError: No module named 'bddl'.
     #
     # robomimic (pulled in by LIBERO's requirements.txt) declares egl-probe
-    # as a hard dependency, which needs `cmake` to build from source -- not
-    # on this login node's PATH ("RuntimeError: CMake must be installed").
-    # Confirmed via the already-working local venv that egl_probe isn't
-    # actually needed at runtime (not installed there at all -- robomimic
-    # only imports it lazily inside a GPU-device-selection helper our path
-    # never calls, since we force MUJOCO_GL=egl/PYOPENGL_PLATFORM=egl
-    # directly). Rather than skip it (fragile to get right with uv's
-    # resolver), install the pure-Python `cmake` PyPI wheel first (ships a
-    # prebuilt binary, no sudo/system package needed) and put it on PATH.
-    uv pip install --python "$SIM_VENV_DIR/bin/python" cmake
-    export PATH="$SIM_VENV_DIR/bin:$PATH"
-    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r "$LIBERO_BENCH_DIR/requirements.txt"
+    # as a hard dependency, which needs a from-source cmake build -- not
+    # only is cmake missing on this login node, but egl_probe's ancient
+    # CMakeLists.txt (cmake_minimum_required < 3.5) is incompatible with
+    # any modern cmake anyway (including the pip cmake wheel: "Compatibility
+    # with CMake < 3.5 has been removed"). Confirmed via the already-working
+    # local venv that egl_probe is not actually needed at runtime -- it (and
+    # several other robomimic deps: h5py, tensorboard, tensorboardX) are
+    # NOT installed there either, meaning the local setup effectively
+    # installed robomimic with --no-deps too. Replicate that exactly:
+    # install everything else normally, then robomimic separately with
+    # --no-deps (torch/torchvision/numpy/imageio/tqdm -- the deps we DO
+    # need -- are already covered by libero_sim/requirements.txt).
+    grep -v -E "^\s*robomimic\b" "$LIBERO_BENCH_DIR/requirements.txt" > /tmp/libero_bench_requirements_no_robomimic.txt
+    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r /tmp/libero_bench_requirements_no_robomimic.txt
+    uv pip install --python "$SIM_VENV_DIR/bin/python" --no-deps robomimic==0.2.0
     uv pip install --python "$SIM_VENV_DIR/bin/python" -e "$LIBERO_BENCH_DIR"
     touch "$SIM_VENV_DIR/.setup_complete"
 fi
