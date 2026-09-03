@@ -79,3 +79,11 @@ Wand==0.7.2
 # websockets, msgpack.
 websockets>=11.0
 msgpack>=1.0.5
+
+# model2libero_interface.py also imports starVLA.model.tools.read_mode_config
+# (resolved via PYTHONPATH into the repo, not pip-installed -- same pattern
+# already used for starVLA/examples.SimplerEnv imports here). Traced its own
+# import chain (tools.py -> starVLA.training.trainer_utils -> .overwatch,
+# all stdlib except this one): needs omegaconf, present locally but never
+# pinned here.
+omegaconf==2.3.1
