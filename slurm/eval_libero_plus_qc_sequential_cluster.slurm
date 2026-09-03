@@ -71,6 +71,7 @@ UNCERTAINTY_PENALTY="${UNCERTAINTY_PENALTY:-0.0}"
 ACTOR_DISAGREEMENT_PENALTY="${ACTOR_DISAGREEMENT_PENALTY:-0.0}"
 CRITIC_WEIGHT="${CRITIC_WEIGHT:-1.0}"
 MAXIMIZE_SCORE="${MAXIMIZE_SCORE:-}"
+NORMALIZE_SCORE_TERMS="${NORMALIZE_SCORE_TERMS:-}"  # set to "true" to pass --normalize_score_terms
 SELECTION_MODE="${SELECTION_MODE:-score}"
 MAX_TASKS_PER_SUITE="${MAX_TASKS_PER_SUITE:-0}"   # 0 = full (10,026 tasks); set e.g. 100 for a quick check
 CATEGORY_TIMEOUT_S="${CATEGORY_TIMEOUT_S:-86400}" # Sensor Noise needs ~13h+ at worst-case pace, see header
@@ -229,6 +230,7 @@ for category in "${CATEGORIES[@]}"; do
             --actor_disagreement_penalty "$ACTOR_DISAGREEMENT_PENALTY" \
             --critic_weight "$CRITIC_WEIGHT" --selection_mode "$SELECTION_MODE" \
             ${MAXIMIZE_SCORE:+--maximize_score} \
+            ${NORMALIZE_SCORE_TERMS:+--normalize_score_terms} \
             --port "$port" --cuda 0 \
             > "$LOG_DIR/server_libero_plus_${RUN_TAG}_${cat_tag}.log" 2>&1 &
     else

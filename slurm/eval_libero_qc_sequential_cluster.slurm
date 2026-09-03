@@ -67,6 +67,7 @@ UNCERTAINTY_PENALTY="${UNCERTAINTY_PENALTY:-0.0}"
 ACTOR_DISAGREEMENT_PENALTY="${ACTOR_DISAGREEMENT_PENALTY:-0.0}"
 CRITIC_WEIGHT="${CRITIC_WEIGHT:-1.0}"
 MAXIMIZE_SCORE="${MAXIMIZE_SCORE:-}"
+NORMALIZE_SCORE_TERMS="${NORMALIZE_SCORE_TERMS:-}"  # set to "true" to pass --normalize_score_terms
 SELECTION_MODE="${SELECTION_MODE:-score}"
 CATEGORY_TIMEOUT_S="${CATEGORY_TIMEOUT_S:-21600}"   # per-suite; see eval_vlajepa_libero_plus_sequential.sh's
                                                      # timeout history if a suite ever needs longer
@@ -224,6 +225,7 @@ for suite in "${SUITES[@]}"; do
             --actor_disagreement_penalty "$ACTOR_DISAGREEMENT_PENALTY" \
             --critic_weight "$CRITIC_WEIGHT" --selection_mode "$SELECTION_MODE" \
             ${MAXIMIZE_SCORE:+--maximize_score} \
+            ${NORMALIZE_SCORE_TERMS:+--normalize_score_terms} \
             --port "$port" --cuda 0 \
             > "$LOG_DIR/server_libero${TAG_SUFFIX}_${suite}.log" 2>&1 &
     else

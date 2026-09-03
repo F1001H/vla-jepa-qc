@@ -58,6 +58,7 @@ Q_AGG=mean
 UNCERTAINTY_PENALTY=1.0
 ACTOR_DISAGREEMENT_PENALTY=1.0
 CRITIC_WEIGHT=1.0
+NORMALIZE_SCORE_TERMS="${NORMALIZE_SCORE_TERMS:-}"  # set to "true" to pass --normalize_score_terms
 
 export HF_HOME="${HF_HOME:-$SHARED_WS/huggingface}"
 # Catch-all for stray ${oc.env:WORKSPACE} interpolations left in the
@@ -147,6 +148,7 @@ for i in "${!VARIANTS[@]}"; do
             --num_samples "$NUM_SAMPLES" --num_qs "$NUM_QS" --q_agg "$Q_AGG" \
             --uncertainty_penalty "$UNCERTAINTY_PENALTY" --actor_disagreement_penalty "$ACTOR_DISAGREEMENT_PENALTY" \
             --critic_weight "$CRITIC_WEIGHT" --selection_mode score --maximize_score \
+            ${NORMALIZE_SCORE_TERMS:+--normalize_score_terms} \
             --port "$port" --cuda 0 \
             > "$LOG_DIR/server_critic_ablation_${variant}.log" 2>&1 &
         server_pid=$!
