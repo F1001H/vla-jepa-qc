@@ -77,6 +77,11 @@ CATEGORY_TIMEOUT_S="${CATEGORY_TIMEOUT_S:-86400}" # Sensor Noise needs ~13h+ at 
 RUN_TAG="${RUN_TAG:-plain}"
 
 export HF_HOME="${HF_HOME:-$SHARED_WS/huggingface}"
+# Catch-all for stray ${oc.env:WORKSPACE} interpolations left in the
+# checkpoint config.json/config.yaml (see label_train_libero_qc_critic_8gpu.slurm's
+# header comment) -- these fields aren't read at runtime, they just need
+# to resolve without a KeyError.
+export WORKSPACE="$WORK_DIR"
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 
