@@ -60,6 +60,7 @@ LOG_DIR="$WORK_DIR/logs"
 
 LIBERO_CKPT="$CKPT_DIR/VLA-JEPA-LIBERO-repo/LIBERO/checkpoints/VLA-JEPA-LIBERO.pt"
 SIM_VENV_DIR="$WORK_DIR/libero_sim_venv"
+LIBERO_BENCH_DIR="$WORK_DIR/libero_sim/LIBERO"
 LIBERO_PLUS_BENCH_DIR="$WORK_DIR/libero_sim/LIBERO-plus"
 LIBERO_PLUS_CONFIG_DIR="$WORK_DIR/libero_sim/.libero_plus_config"
 
@@ -106,9 +107,55 @@ if [ ! -f "$LIBERO_CKPT" ]; then
     echo "ERROR: LIBERO checkpoint not found under $WORK_DIR -- run label_train_libero_qc_critic_8gpu.slurm first." >&2
     exit 1
 fi
+# --- LIBERO benchmark clone (code + BDDL files + assets, not the demo
+# datasets -- we use our own physical-intelligence/libero for that) ---
+if [ ! -d "$LIBERO_BENCH_DIR" ]; then
+    echo "=== Cloning LIBERO benchmark ==="
+    git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git "$LIBERO_BENCH_DIR"
+fi
+
+# --- LIBERO sim venv (Python 3.8, separate from the VLA-JEPA .venv --
+# mirrors examples/libero/.venv in the openpi repo). Lives under
+# $SHARED_WS (not $HOME), so -- unlike the VLA-JEPA .venv -- building it
+# from inside this compute-node job is fine. Full build logic (bddl,
+# robomimic/egl_probe, robosuite version conflict) copied verbatim from
+# eval_libero_qc_sequential_cluster.slurm rather than depending on that
+# script having been run first, so this job is self-contained. ---
 if [ ! -f "$SIM_VENV_DIR/.setup_complete" ]; then
-    echo "ERROR: $SIM_VENV_DIR is missing." >&2
-    exit 1
+    echo "=== Building LIBERO sim venv ==="
+    uv venv --python 3.8 "$SIM_VENV_DIR"
+    # Mirrors examples/libero/README.md's real install sequence -- syncing
+    # ONLY libero_sim/requirements.txt (our port of examples/libero/requirements.txt)
+    # misses the LIBERO submodule's OWN requirements.txt (bddl, robomimic,
+    # easydict, hydra-core, etc.), which the local working venv also installs.
+    # Missing bddl specifically crashes eval_libero.py immediately with
+    # ModuleNotFoundError: No module named 'bddl'.
+    #
+    # robomimic (pulled in by LIBERO's requirements.txt) declares egl-probe
+    # as a hard dependency, which needs a from-source cmake build -- not
+    # only is cmake missing on this login node, but egl_probe's ancient
+    # CMakeLists.txt (cmake_minimum_required < 3.5) is incompatible with
+    # any modern cmake anyway (including the pip cmake wheel: "Compatibility
+    # with CMake < 3.5 has been removed"). Confirmed via the already-working
+    # local venv that egl_probe is not actually needed at runtime -- it (and
+    # several other robomimic deps: h5py, tensorboard, tensorboardX) are
+    # NOT installed there either, meaning the local setup effectively
+    # installed robomimic with --no-deps too. Replicate that exactly:
+    # install everything else normally, then robomimic separately with
+    # --no-deps (torch/torchvision/numpy/imageio/tqdm -- the deps we DO
+    # need -- are already covered by libero_sim/requirements.txt).
+    #
+    # Also strip robosuite: the freshly `git clone`d upstream LIBERO repo
+    # has apparently drifted from openpi's vendored copy and now pins
+    # robosuite==1.4.0 directly, conflicting with libero_sim/requirements.txt's
+    # own robosuite==1.4.1 pin (the version combo actually validated working
+    # locally, per that file's own header comment) -- "No solution found ...
+    # robosuite==1.4.1 and robosuite==1.4.0 ... unsatisfiable". Let our pin win.
+    grep -v -E "^\s*(robomimic|robosuite)\b" "$LIBERO_BENCH_DIR/requirements.txt" > /tmp/libero_bench_requirements_filtered.txt
+    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r /tmp/libero_bench_requirements_filtered.txt
+    uv pip install --python "$SIM_VENV_DIR/bin/python" --no-deps robomimic==0.2.0
+    uv pip install --python "$SIM_VENV_DIR/bin/python" -e "$LIBERO_BENCH_DIR"
+    touch "$SIM_VENV_DIR/.setup_complete"
 fi
 SIM_PY="$SIM_VENV_DIR/bin/python"
 if [ -n "$CRITIC_PATH" ] && [ ! -f "$CRITIC_PATH" ]; then
