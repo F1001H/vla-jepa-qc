@@ -31,9 +31,9 @@ set -uo pipefail   # NOT -e: need to check each of the 6 parallel evals' own exi
 # / smoketest_libero_qc_pipeline.slurm -- any one of these builds it).
 #
 # Submit with:
-#   sbatch ~/vla-jepa-qc/slurm/eval_libero_critic_ablation_8gpu.slurm
+#   sbatch ~/vla-jepa-qc/slurm/eval_libero_critic_ablation_6gpu.slurm
 # or, if cloned elsewhere:
-#   REPO_DIR=/path/to/vla-jepa-qc sbatch /path/to/vla-jepa-qc/slurm/eval_libero_critic_ablation_8gpu.slurm
+#   REPO_DIR=/path/to/vla-jepa-qc sbatch /path/to/vla-jepa-qc/slurm/eval_libero_critic_ablation_6gpu.slurm
 
 SHARED_WS="/mnt/vast/workspaces/VLA_Reinforcement"
 WORK_DIR="$SHARED_WS/fabian/vlajepa_libero_qc"
