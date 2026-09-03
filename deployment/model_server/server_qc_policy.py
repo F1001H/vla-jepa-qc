@@ -86,6 +86,7 @@ def main(args) -> None:
         critic_weight=args.critic_weight,
         maximize_score=args.maximize_score,
         selection_mode=args.selection_mode,
+        normalize_score_terms=args.normalize_score_terms,
     )
     policy = QCPolicyWrapper(vla, critic, args.num_samples, score_kwargs)
 
@@ -125,6 +126,15 @@ def build_argparser():
     parser.add_argument(
         "--selection_mode", "--selection-mode", dest="selection_mode",
         type=str, default="score", choices=["score", "majority_vote"],
+    )
+    parser.add_argument(
+        "--normalize_score_terms", "--normalize-score-terms", dest="normalize_score_terms",
+        action="store_true",
+        help="Z-score q/disagreement/actor_disagreement across the N candidates before "
+        "combining with the penalty weights, instead of summing raw values. See "
+        "qc/actor.py's best_of_n_action docstring for why this matters -- raw terms "
+        "live on very different scales and actor_disagreement silently dominates "
+        "selection otherwise.",
     )
     return parser
 

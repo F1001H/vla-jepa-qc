@@ -30,6 +30,7 @@ def best_of_n_action(
     critic_weight: float = 1.0,
     maximize_score: bool = False,
     selection_mode: str = "score",
+    normalize_score_terms: bool = False,
     **kwargs,
 ) -> dict:
     """Returns dict shaped like predict_action's original output (single
@@ -71,6 +72,23 @@ def best_of_n_action(
         qs = critic(embed_t, proprio_t, candidates_for_critic)  # [num_qs, N]
     q = qs.min(dim=0).values if q_agg == "min" else qs.mean(dim=0)  # [N]
     disagreement = qs.std(dim=0)  # [N] -- cross-head disagreement, critic's own epistemic uncertainty proxy
+
+    if normalize_score_terms:
+        # Raw q/disagreement/actor_disagreement live on wildly different scales
+        # (diagnosed offline against qc_cache_full_intrinsic.npz: median
+        # within-timestep spread ratio q:disagreement:actor_disagreement was
+        # roughly 4:1:21) -- summing them raw means actor_disagreement
+        # silently dominates selection regardless of the penalty weights,
+        # since it's the SPREAD across the N candidates (not raw magnitude)
+        # that determines argmax/argmin. Z-score each term across the N
+        # candidates (this call's own batch) so the weights actually control
+        # relative influence.
+        def _zscore(x: torch.Tensor) -> torch.Tensor:
+            return (x - x.mean()) / (x.std(unbiased=False) + 1e-6)
+
+        q = _zscore(q)
+        disagreement = _zscore(disagreement)
+        actor_disagreement = _zscore(actor_disagreement)
 
     score = (
         critic_weight * q
