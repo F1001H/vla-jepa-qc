@@ -72,4 +72,10 @@ Wand==0.7.2
 # to talk to server_qc_policy.py/server_policy.py -- locally this came in
 # transitively via `uv pip install -e packages/openpi-client` (openpi's
 # README install sequence), which this fork's sim venv build doesn't run.
+# Full transitive import set of websocket_policy_client.py + msgpack_numpy.py,
+# checked directly against those two files rather than guessed, so this
+# doesn't turn into another one-at-a-time whack-a-mole:
+# typing_extensions (already pinned above), numpy (already pinned above),
+# websockets, msgpack.
 websockets>=11.0
+msgpack>=1.0.5
