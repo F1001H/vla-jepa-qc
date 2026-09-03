@@ -87,6 +87,7 @@ def main(args) -> None:
         maximize_score=args.maximize_score,
         selection_mode=args.selection_mode,
         normalize_score_terms=args.normalize_score_terms,
+        rank_score_terms=args.rank_score_terms,
     )
     policy = QCPolicyWrapper(vla, critic, args.num_samples, score_kwargs)
 
@@ -125,7 +126,7 @@ def build_argparser():
     parser.add_argument("--maximize_score", "--maximize-score", dest="maximize_score", action="store_true")
     parser.add_argument(
         "--selection_mode", "--selection-mode", dest="selection_mode",
-        type=str, default="score", choices=["score", "majority_vote"],
+        type=str, default="score", choices=["score", "majority_vote", "random"],
     )
     parser.add_argument(
         "--normalize_score_terms", "--normalize-score-terms", dest="normalize_score_terms",
@@ -135,6 +136,13 @@ def build_argparser():
         "qc/actor.py's best_of_n_action docstring for why this matters -- raw terms "
         "live on very different scales and actor_disagreement silently dominates "
         "selection otherwise.",
+    )
+    parser.add_argument(
+        "--rank_score_terms", "--rank-score-terms", dest="rank_score_terms",
+        action="store_true",
+        help="Rank-transform each score term across the N candidates instead of "
+        "z-scoring (see normalize_score_terms) or summing raw. Takes precedence "
+        "over normalize_score_terms if both are passed.",
     )
     return parser
 

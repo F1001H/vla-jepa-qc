@@ -31,6 +31,7 @@ def best_of_n_action(
     maximize_score: bool = False,
     selection_mode: str = "score",
     normalize_score_terms: bool = False,
+    rank_score_terms: bool = False,
     **kwargs,
 ) -> dict:
     """Returns dict shaped like predict_action's original output (single
@@ -73,7 +74,28 @@ def best_of_n_action(
     q = qs.min(dim=0).values if q_agg == "min" else qs.mean(dim=0)  # [N]
     disagreement = qs.std(dim=0)  # [N] -- cross-head disagreement, critic's own epistemic uncertainty proxy
 
-    if normalize_score_terms:
+    if rank_score_terms:
+        # Alternative to z-scoring: convert each term to its zero-centered
+        # RANK among the N candidates instead of a rescaled value. Motivated
+        # by an empirical A/B (2026-09-03, local): normalize_score_terms
+        # (z-score) made libero_10 and LIBERO-Plus's Camera Viewpoints WORSE,
+        # not better, despite the scale-mismatch diagnosis being solid --
+        # plausible explanation is the critic's raw q/disagreement spread is
+        # so tiny (near noise floor, see actor's z-score comment below) that
+        # z-scoring promotes that noise to unit variance, giving it equal
+        # say to actor_disagreement's (probably more real) signal. Rank
+        # transform is robust to this: a nearly-random term's RANK is still
+        # bounded, symmetric noise instead of being rescaled up to dominate.
+        def _rank(x: torch.Tensor) -> torch.Tensor:
+            order = torch.argsort(x)
+            ranks = torch.empty_like(order, dtype=x.dtype)
+            ranks[order] = torch.arange(len(x), dtype=x.dtype, device=x.device)
+            return ranks - (len(x) - 1) / 2.0
+
+        q = _rank(q)
+        disagreement = _rank(disagreement)
+        actor_disagreement = _rank(actor_disagreement)
+    elif normalize_score_terms:
         # Raw q/disagreement/actor_disagreement live on wildly different scales
         # (diagnosed offline against qc_cache_full_intrinsic.npz: median
         # within-timestep spread ratio q:disagreement:actor_disagreement was
@@ -82,7 +104,9 @@ def best_of_n_action(
         # since it's the SPREAD across the N candidates (not raw magnitude)
         # that determines argmax/argmin. Z-score each term across the N
         # candidates (this call's own batch) so the weights actually control
-        # relative influence.
+        # relative influence. NOTE (2026-09-03): empirically this made
+        # results WORSE on non-saturated suites, not better -- see
+        # rank_score_terms's comment above for the leading hypothesis why.
         def _zscore(x: torch.Tensor) -> torch.Tensor:
             return (x - x.mean()) / (x.std(unbiased=False) + 1e-6)
 
@@ -96,7 +120,14 @@ def best_of_n_action(
         + actor_disagreement_penalty * actor_disagreement
     )
 
-    if selection_mode == "majority_vote":
+    if selection_mode == "random":
+        # Control: ignores q/disagreement/actor_disagreement entirely, picks
+        # uniformly among the N candidates. Establishes the floor -- if this
+        # matches "best ablation" performance, the apparent best-of-N gains
+        # throughout this investigation may just be free sample diversity
+        # from stochastic decoding, not selection quality.
+        best_idx = int(torch.randint(0, num_samples, (1,)).item())
+    elif selection_mode == "majority_vote":
         per_head_best = torch.argmax(qs, dim=-1) if maximize_score else torch.argmin(qs, dim=-1)  # [num_qs]
         votes = torch.bincount(per_head_best, minlength=num_samples)
         best_idx = int(torch.argmax(votes).item())
