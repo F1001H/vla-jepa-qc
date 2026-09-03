@@ -66,3 +66,10 @@ zipp==3.20.2
 # import time (not just this Python wheel) -- see
 # slurm/eval_libero_plus_qc_sequential_cluster.slurm's precondition check.
 Wand==0.7.2
+
+# The sim-side eval client (examples/LIBERO/model2libero_interface.py)
+# imports deployment/model_server/tools/websocket_policy_client.py directly
+# to talk to server_qc_policy.py/server_policy.py -- locally this came in
+# transitively via `uv pip install -e packages/openpi-client` (openpi's
+# README install sequence), which this fork's sim venv build doesn't run.
+websockets>=11.0
