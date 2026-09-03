@@ -116,7 +116,13 @@ fi
 if [ ! -f "$SIM_VENV_DIR/.setup_complete" ]; then
     echo "=== Building LIBERO sim venv ==="
     uv venv --python 3.8 "$SIM_VENV_DIR"
-    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt"
+    # Mirrors examples/libero/README.md's real install sequence -- syncing
+    # ONLY libero_sim/requirements.txt (our port of examples/libero/requirements.txt)
+    # misses the LIBERO submodule's OWN requirements.txt (bddl, robomimic,
+    # easydict, hydra-core, etc.), which the local working venv also installs.
+    # Missing bddl specifically crashes eval_libero.py immediately with
+    # ModuleNotFoundError: No module named 'bddl'.
+    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r "$LIBERO_BENCH_DIR/requirements.txt"
     uv pip install --python "$SIM_VENV_DIR/bin/python" -e "$LIBERO_BENCH_DIR"
     touch "$SIM_VENV_DIR/.setup_complete"
 fi
