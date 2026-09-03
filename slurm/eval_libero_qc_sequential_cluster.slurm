@@ -136,8 +136,15 @@ if [ ! -f "$SIM_VENV_DIR/.setup_complete" ]; then
     # install everything else normally, then robomimic separately with
     # --no-deps (torch/torchvision/numpy/imageio/tqdm -- the deps we DO
     # need -- are already covered by libero_sim/requirements.txt).
-    grep -v -E "^\s*robomimic\b" "$LIBERO_BENCH_DIR/requirements.txt" > /tmp/libero_bench_requirements_no_robomimic.txt
-    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r /tmp/libero_bench_requirements_no_robomimic.txt
+    #
+    # Also strip robosuite: the freshly `git clone`d upstream LIBERO repo
+    # has apparently drifted from openpi's vendored copy and now pins
+    # robosuite==1.4.0 directly, conflicting with libero_sim/requirements.txt's
+    # own robosuite==1.4.1 pin (the version combo actually validated working
+    # locally, per that file's own header comment) -- "No solution found ...
+    # robosuite==1.4.1 and robosuite==1.4.0 ... unsatisfiable". Let our pin win.
+    grep -v -E "^\s*(robomimic|robosuite)\b" "$LIBERO_BENCH_DIR/requirements.txt" > /tmp/libero_bench_requirements_filtered.txt
+    uv pip install --python "$SIM_VENV_DIR/bin/python" -r "$REPO_DIR/libero_sim/requirements.txt" -r /tmp/libero_bench_requirements_filtered.txt
     uv pip install --python "$SIM_VENV_DIR/bin/python" --no-deps robomimic==0.2.0
     uv pip install --python "$SIM_VENV_DIR/bin/python" -e "$LIBERO_BENCH_DIR"
     touch "$SIM_VENV_DIR/.setup_complete"
