@@ -22,7 +22,10 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 
 
 @torch.inference_mode()
-def predict_action_candidates(model, batch_images, instructions, state=None, num_samples=8, **kwargs):
+def predict_action_candidates(
+    model, batch_images, instructions, state=None, num_samples=8,
+    temperature=1.0, sde_noise_scale=0.0, **kwargs,
+):
     """Same call signature/shape conventions as VLA_JEPA.predict_action, but
     returns num_samples candidate action chunks for the SINGLE observation
     in batch_images[0]/instructions[0].
@@ -79,7 +82,9 @@ def predict_action_candidates(model, batch_images, instructions, state=None, num
     state_rep = state_t.repeat(num_samples, 1, 1) if state_t is not None else None
 
     with torch.autocast("cuda", dtype=torch.float32):
-        pred_actions = model.action_model.predict_action(tokens_rep, state_rep)  # [N, chunk_len, action_dim]
+        pred_actions = model.action_model.predict_action(
+            tokens_rep, state_rep, temperature=temperature, sde_noise_scale=sde_noise_scale,
+        )  # [N, chunk_len, action_dim]
 
     return {
         "normalized_actions": pred_actions.detach().cpu().numpy(),

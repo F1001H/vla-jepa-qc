@@ -88,6 +88,8 @@ def main(args) -> None:
         selection_mode=args.selection_mode,
         normalize_score_terms=args.normalize_score_terms,
         rank_score_terms=args.rank_score_terms,
+        candidate_temperature=args.candidate_temperature,
+        candidate_sde_noise_scale=args.candidate_sde_noise_scale,
     )
     policy = QCPolicyWrapper(vla, critic, args.num_samples, score_kwargs)
 
@@ -143,6 +145,23 @@ def build_argparser():
         help="Rank-transform each score term across the N candidates instead of "
         "z-scoring (see normalize_score_terms) or summing raw. Takes precedence "
         "over normalize_score_terms if both are passed.",
+    )
+    parser.add_argument(
+        "--candidate_temperature", "--candidate-temperature", dest="candidate_temperature",
+        type=float, default=1.0,
+        help="Scales the flow-matching sampler's INITIAL noise draw (default 1.0 = "
+        "original unit-Gaussian behavior). Raising it increases candidate diversity "
+        "but risks pushing candidates off-distribution (the model was trained on "
+        "unit-Gaussian starts). See qc/actor.py's best_of_n_action for why this "
+        "matters -- N candidates were found nearly IDENTICAL in raw action space.",
+    )
+    parser.add_argument(
+        "--candidate_sde_noise_scale", "--candidate-sde-noise-scale", dest="candidate_sde_noise_scale",
+        type=float, default=0.0,
+        help="Injects noise at every Euler integration step instead of only at the "
+        "start (default 0.0 = original pure-ODE behavior, no injection). Likely "
+        "gentler on action quality than candidate_temperature for the same amount "
+        "of added diversity, since it's spread across the whole trajectory.",
     )
     return parser
 

@@ -32,6 +32,8 @@ def best_of_n_action(
     selection_mode: str = "score",
     normalize_score_terms: bool = False,
     rank_score_terms: bool = False,
+    candidate_temperature: float = 1.0,
+    candidate_sde_noise_scale: float = 0.0,
     **kwargs,
 ) -> dict:
     """Returns dict shaped like predict_action's original output (single
@@ -47,7 +49,10 @@ def best_of_n_action(
     label_rewards.py's cache: candidates stored at native length, chunk
     aggregation/truncation happens at read/use time).
     """
-    out = predict_action_candidates(model, batch_images, instructions, state=state, num_samples=num_samples)
+    out = predict_action_candidates(
+        model, batch_images, instructions, state=state, num_samples=num_samples,
+        temperature=candidate_temperature, sde_noise_scale=candidate_sde_noise_scale,
+    )
     candidates = out["normalized_actions"]  # [N, chunk_len, action_dim] np -- native chunk_len (e.g. 7)
     embodied_action_tokens = out["embodied_action_tokens"]  # [1, num_tokens, H] np
 

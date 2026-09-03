@@ -317,7 +317,32 @@ class FlowmatchingActionHead(nn.Module):
         return loss
 
     @torch.no_grad()
-    def predict_action(self, vl_embs: torch.Tensor, state: torch.Tensor = None) -> torch.Tensor:
+    def predict_action(
+        self,
+        vl_embs: torch.Tensor,
+        state: torch.Tensor = None,
+        temperature: float = 1.0,
+        sde_noise_scale: float = 0.0,
+    ) -> torch.Tensor:
+        """temperature/sde_noise_scale default to 1.0/0.0, which reproduces
+        the original deterministic-ODE behavior exactly (unit-Gaussian
+        initial noise, no per-step injection) -- both are opt-in, added for
+        qc/sampling.py's best-of-N candidate generation. Motivated by
+        2026-09-03 diagnostics finding N=8 candidates from the same
+        observation were nearly IDENTICAL in raw action space (median std
+        0.0031 across the LIBERO cache), consistent with the flow-matching
+        ODE's field strongly contracting toward one mode regardless of the
+        initial noise draw -- normal for a low-multimodality expert-data
+        policy, but it means there's very little for ANY best-of-N scoring
+        method to discriminate between. temperature scales the INITIAL
+        noise draw (off-distribution risk if pushed too far, since the
+        model was trained on unit-Gaussian starts); sde_noise_scale injects
+        small noise at every Euler step instead (spread throughout the
+        trajectory, likely gentler on action quality for the same amount of
+        added diversity) -- see qc/actor.py's isolation-ablation findings
+        for why raising diversity, not fixing the score-combination
+        formula, is the current best lead.
+        """
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
@@ -325,7 +350,7 @@ class FlowmatchingActionHead(nn.Module):
             size=(batch_size, self.config.action_horizon, self.config.action_dim),
             dtype=vl_embs.dtype,
             device=device,
-        )
+        ) * temperature
 
         num_steps = self.num_inference_timesteps
         dt = 1.0 / num_steps
@@ -364,8 +389,11 @@ class FlowmatchingActionHead(nn.Module):
 
             pred_velocity = pred[:, -self.action_horizon :]
 
-            # Update actions using euler integration.
+            # Update actions using euler integration. sde_noise_scale=0.0
+            # (default) reproduces the original pure-ODE update exactly.
             actions = actions + dt * pred_velocity
+            if sde_noise_scale > 0.0:
+                actions = actions + (dt**0.5) * sde_noise_scale * torch.randn_like(actions)
         return actions
 
     @property
