@@ -49,16 +49,23 @@ LIBERO_BENCH_DIR="$WORK_DIR/libero_sim/LIBERO"
 LIBERO_CONFIG_DIR="$WORK_DIR/libero_sim/.libero_config"
 NUM_TRIALS="${NUM_TRIALS:-20}"
 
-# Best ablation setting (fixed for all 6 -- only the CRITIC differs between
-# variants; these scoring-time knobs stay constant so the comparison is
-# apples-to-apples).
+# Scoring-time knobs stay constant across all 6 -- only the CRITIC differs
+# between variants -- so the comparison is apples-to-apples. Defaults
+# changed 2026-09-03 to CRITIC-ONLY (actor_disagreement_penalty=0) after a
+# local isolation-ablation A/B found the old combined formula
+# (critic_weight=1, uncertainty_penalty=1, actor_disagreement_penalty=1)
+# underperforms both critic-only AND plain random selection on 2/2
+# non-saturated LIBERO-Plus categories tested -- see
+# ~/starvla_jepa/isolation_ablations.log locally. Still overridable per-run.
 NUM_SAMPLES=8
 NUM_QS=5
 Q_AGG=mean
-UNCERTAINTY_PENALTY=1.0
-ACTOR_DISAGREEMENT_PENALTY=1.0
-CRITIC_WEIGHT=1.0
+UNCERTAINTY_PENALTY="${UNCERTAINTY_PENALTY:-1.0}"
+ACTOR_DISAGREEMENT_PENALTY="${ACTOR_DISAGREEMENT_PENALTY:-0.0}"
+CRITIC_WEIGHT="${CRITIC_WEIGHT:-1.0}"
 NORMALIZE_SCORE_TERMS="${NORMALIZE_SCORE_TERMS:-}"  # set to "true" to pass --normalize_score_terms
+RANK_SCORE_TERMS="${RANK_SCORE_TERMS:-}"            # set to "true" to pass --rank_score_terms
+SELECTION_MODE="${SELECTION_MODE:-score}"           # set to "random" for the random-control sanity check
 
 export HF_HOME="${HF_HOME:-$SHARED_WS/huggingface}"
 # Catch-all for stray ${oc.env:WORKSPACE} interpolations left in the
@@ -147,8 +154,9 @@ for i in "${!VARIANTS[@]}"; do
             --ckpt_path "$LIBERO_CKPT" --critic_checkpoint_path "$CRITIC_DIR/vlajepa_critic_${variant}.pt" \
             --num_samples "$NUM_SAMPLES" --num_qs "$NUM_QS" --q_agg "$Q_AGG" \
             --uncertainty_penalty "$UNCERTAINTY_PENALTY" --actor_disagreement_penalty "$ACTOR_DISAGREEMENT_PENALTY" \
-            --critic_weight "$CRITIC_WEIGHT" --selection_mode score --maximize_score \
+            --critic_weight "$CRITIC_WEIGHT" --selection_mode "$SELECTION_MODE" --maximize_score \
             ${NORMALIZE_SCORE_TERMS:+--normalize_score_terms} \
+            ${RANK_SCORE_TERMS:+--rank_score_terms} \
             --port "$port" --cuda 0 \
             > "$LOG_DIR/server_critic_ablation_${variant}.log" 2>&1 &
         server_pid=$!
