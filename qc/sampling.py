@@ -22,23 +22,15 @@ from starVLA.training.trainer_utils.trainer_tools import resize_images
 
 
 @torch.inference_mode()
-def predict_action_candidates(
-    model, batch_images, instructions, state=None, num_samples=8,
-    temperature=1.0, sde_noise_scale=0.0, **kwargs,
-):
-    """Same call signature/shape conventions as VLA_JEPA.predict_action, but
-    returns num_samples candidate action chunks for the SINGLE observation
-    in batch_images[0]/instructions[0].
-
-    Returns:
-        dict with:
-          normalized_actions: [num_samples, chunk_len, action_dim] np.ndarray
-          embodied_action_tokens: [1, num_tokens, H] np.ndarray -- the ONE
-            Qwen forward's output (identical for every candidate, so NOT
-            repeated here; the caller pools/repeats it for the critic).
+def encode_observation(model, batch_images, instructions):
+    """Runs the expensive Qwen3-VL forward pass ONCE for a single live
+    observation and returns embodied_action_tokens as an on-device torch
+    tensor (NOT numpy -- callers that need multiple decode_candidates calls,
+    e.g. qc/actor.py's adaptive-entropy resampling, should keep this on
+    device and reuse it directly rather than round-tripping through numpy).
     """
     assert len(batch_images) == 1 and len(instructions) == 1, (
-        "predict_action_candidates samples N candidates for a SINGLE live observation "
+        "encode_observation takes a SINGLE live observation "
         "(that's what best-of-N eval calls one env step at a time with); "
         "a batch of >1 observations should use the plain predict_action instead."
     )
@@ -70,14 +62,23 @@ def predict_action_candidates(
         B, _, H = last_hidden.shape
         embodied_action_tokens = last_hidden[embodied_action_indices[0], embodied_action_indices[1], :].view(B, -1, H)
 
+    return embodied_action_tokens
+
+
+@torch.inference_mode()
+def decode_candidates(model, embodied_action_tokens, state=None, num_samples=8, temperature=1.0, sde_noise_scale=0.0):
+    """Cheap batch-general flow-matching decode given an ALREADY-COMPUTED
+    embodied_action_tokens (from encode_observation) -- reusable across
+    multiple calls (e.g. re-decoding at a different temperature for
+    adaptive-entropy resampling) without repeating the expensive Qwen
+    forward pass. Returns pred_actions as an on-device torch tensor,
+    [num_samples, chunk_len, action_dim].
+    """
     state_t = (
-        torch.from_numpy(np.array(state)).to(last_hidden.device, dtype=last_hidden.dtype)
+        torch.from_numpy(np.array(state)).to(embodied_action_tokens.device, dtype=embodied_action_tokens.dtype)
         if state is not None
         else None
     )
-
-    # The single expensive forward pass is done -- everything below is cheap
-    # repeat + the (already batch-general) flow-matching decode.
     tokens_rep = embodied_action_tokens.repeat(num_samples, 1, 1)
     state_rep = state_t.repeat(num_samples, 1, 1) if state_t is not None else None
 
@@ -85,7 +86,32 @@ def predict_action_candidates(
         pred_actions = model.action_model.predict_action(
             tokens_rep, state_rep, temperature=temperature, sde_noise_scale=sde_noise_scale,
         )  # [N, chunk_len, action_dim]
+    return pred_actions
 
+
+@torch.inference_mode()
+def predict_action_candidates(
+    model, batch_images, instructions, state=None, num_samples=8,
+    temperature=1.0, sde_noise_scale=0.0, **kwargs,
+):
+    """Same call signature/shape conventions as VLA_JEPA.predict_action, but
+    returns num_samples candidate action chunks for the SINGLE observation
+    in batch_images[0]/instructions[0]. Thin wrapper composing
+    encode_observation + decode_candidates -- unchanged public behavior,
+    kept for callers that don't need the two-step split.
+
+    Returns:
+        dict with:
+          normalized_actions: [num_samples, chunk_len, action_dim] np.ndarray
+          embodied_action_tokens: [1, num_tokens, H] np.ndarray -- the ONE
+            Qwen forward's output (identical for every candidate, so NOT
+            repeated here; the caller pools/repeats it for the critic).
+    """
+    embodied_action_tokens = encode_observation(model, batch_images, instructions)
+    pred_actions = decode_candidates(
+        model, embodied_action_tokens, state=state, num_samples=num_samples,
+        temperature=temperature, sde_noise_scale=sde_noise_scale,
+    )
     return {
         "normalized_actions": pred_actions.detach().cpu().numpy(),
         "embodied_action_tokens": embodied_action_tokens.to(dtype=torch.float32).detach().cpu().numpy(),

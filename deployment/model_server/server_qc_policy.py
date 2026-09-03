@@ -90,6 +90,8 @@ def main(args) -> None:
         rank_score_terms=args.rank_score_terms,
         candidate_temperature=args.candidate_temperature,
         candidate_sde_noise_scale=args.candidate_sde_noise_scale,
+        adaptive_entropy_threshold=args.adaptive_entropy_threshold,
+        adaptive_resample_temperature=args.adaptive_resample_temperature,
     )
     policy = QCPolicyWrapper(vla, critic, args.num_samples, score_kwargs)
 
@@ -162,6 +164,27 @@ def build_argparser():
         "start (default 0.0 = original pure-ODE behavior, no injection). Likely "
         "gentler on action quality than candidate_temperature for the same amount "
         "of added diversity, since it's spread across the whole trajectory.",
+    )
+    parser.add_argument(
+        "--adaptive_entropy_threshold", "--adaptive-entropy-threshold", dest="adaptive_entropy_threshold",
+        type=float, default=None,
+        help="If set, measures the default-temperature candidates' Gaussian-fit "
+        "differential entropy (nats) and, if below this threshold, resamples an "
+        "EXTRA batch at adaptive_resample_temperature (reusing the already-computed "
+        "Qwen encoding, no second expensive forward pass) and merges it into the "
+        "candidate pool. Targets the diversity boost at states whose candidates "
+        "have actually collapsed, instead of a blanket candidate_temperature bump "
+        "which empirically helps some states/categories while hurting others. "
+        "Default (unset) disables this entirely, matching prior behavior. Pick a "
+        "threshold by checking entropy_estimate values against your own critic/data "
+        "-- there's no universal default, it depends on the action space and horizon.",
+    )
+    parser.add_argument(
+        "--adaptive_resample_temperature", "--adaptive-resample-temperature", dest="adaptive_resample_temperature",
+        type=float, default=1.3,
+        help="Temperature used for the EXTRA resampled batch when "
+        "adaptive_entropy_threshold triggers (default 1.3, the setting found best "
+        "on one LIBERO-Plus category in today's fixed-temperature sweep).",
     )
     return parser
 

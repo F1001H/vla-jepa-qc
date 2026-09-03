@@ -12,7 +12,24 @@ predict_action -- one env step at a time, not a training batch.
 import numpy as np
 import torch
 
-from qc.sampling import predict_action_candidates
+from qc.sampling import decode_candidates, encode_observation
+
+
+def _gaussian_entropy_nats(points: torch.Tensor) -> float:
+    """Closed-form Gaussian-fit differential entropy of a point cloud,
+    0.5*log((2*pi*e)^d * det(Cov)) -- same formula validated offline
+    against qc_cache_full_intrinsic.npz (correlates 0.927 with a k-NN
+    entropy estimator there, so it's picking up real signal, not noise).
+    points: [N, D]. Used here as a RELATIVE trigger for adaptive
+    resampling, not a calibrated/absolute entropy value.
+    """
+    n, dim = points.shape
+    points = points.reshape(n, -1).double()
+    mean = points.mean(dim=0, keepdim=True)
+    centered = points - mean
+    cov = (centered.T @ centered) / max(n - 1, 1) + 1e-8 * torch.eye(dim, dtype=points.dtype, device=points.device)
+    _sign, logdet = torch.linalg.slogdet(cov)
+    return (0.5 * (dim * torch.log(torch.tensor(2 * torch.pi * torch.e, dtype=points.dtype)) + logdet)).item()
 
 
 def best_of_n_action(
@@ -34,6 +51,8 @@ def best_of_n_action(
     rank_score_terms: bool = False,
     candidate_temperature: float = 1.0,
     candidate_sde_noise_scale: float = 0.0,
+    adaptive_entropy_threshold: float | None = None,
+    adaptive_resample_temperature: float = 1.3,
     **kwargs,
 ) -> dict:
     """Returns dict shaped like predict_action's original output (single
@@ -49,21 +68,47 @@ def best_of_n_action(
     label_rewards.py's cache: candidates stored at native length, chunk
     aggregation/truncation happens at read/use time).
     """
-    out = predict_action_candidates(
-        model, batch_images, instructions, state=state, num_samples=num_samples,
+    embodied_action_tokens_t = encode_observation(model, batch_images, instructions)  # [1, num_tokens, H] torch, on-device
+    pred_actions = decode_candidates(
+        model, embodied_action_tokens_t, state=state, num_samples=num_samples,
         temperature=candidate_temperature, sde_noise_scale=candidate_sde_noise_scale,
-    )
-    candidates = out["normalized_actions"]  # [N, chunk_len, action_dim] np -- native chunk_len (e.g. 7)
-    embodied_action_tokens = out["embodied_action_tokens"]  # [1, num_tokens, H] np
+    )  # [N, chunk_len, action_dim] torch, on-device
+
+    if adaptive_entropy_threshold is not None:
+        # Adaptive diversity boost: 2026-09-03 diagnostics found the default
+        # candidates nearly IDENTICAL in raw action space for many states
+        # (median std 0.0031 across the LIBERO cache), and a flat/global
+        # candidate_temperature bump helps some states while hurting others
+        # (empirically: +6.3pp on one LIBERO-Plus category, -1.2pp on
+        # another, same fixed temperature=1.3). Instead of a blanket bump,
+        # measure THIS state's actual candidate entropy and only resample
+        # at higher temperature when it's unusually collapsed. Reuses the
+        # already-computed embodied_action_tokens_t (no second expensive
+        # Qwen forward) and MERGES the extra candidates into the pool
+        # (strictly non-destructive -- scoring can still pick a
+        # default-temperature candidate if those end up better).
+        entropy_estimate = _gaussian_entropy_nats(
+            pred_actions[:, :horizon_length, :].reshape(pred_actions.shape[0], -1)
+        )
+        if entropy_estimate < adaptive_entropy_threshold:
+            resampled = decode_candidates(
+                model, embodied_action_tokens_t, state=state, num_samples=num_samples,
+                temperature=adaptive_resample_temperature, sde_noise_scale=candidate_sde_noise_scale,
+            )
+            pred_actions = torch.cat([pred_actions, resampled], dim=0)  # [2N, chunk_len, action_dim]
+
+    num_candidates = pred_actions.shape[0]  # == num_samples normally, 2*num_samples if adaptively resampled
+    candidates = pred_actions.detach().cpu().numpy()  # [num_candidates, chunk_len, action_dim] np
+    embodied_action_tokens = embodied_action_tokens_t.to(dtype=torch.float32).detach().cpu().numpy()  # [1, num_tokens, H] np
 
     device = next(critic.parameters()).device
     dtype = next(critic.parameters()).dtype
 
     embed = embodied_action_tokens.mean(axis=1)  # [1, H] pooled -- one per obs, not per-candidate
-    embed_t = torch.from_numpy(embed).to(device=device, dtype=dtype).repeat(num_samples, 1)  # [N, H]
+    embed_t = torch.from_numpy(embed).to(device=device, dtype=dtype).repeat(num_candidates, 1)  # [num_candidates, H]
 
     proprio = np.asarray(state, dtype=np.float32).reshape(1, -1) if state is not None else np.zeros((1, 0), dtype=np.float32)
-    proprio_t = torch.from_numpy(proprio).to(device=device, dtype=dtype).repeat(num_samples, 1)  # [N, proprio_dim]
+    proprio_t = torch.from_numpy(proprio).to(device=device, dtype=dtype).repeat(num_candidates, 1)  # [num_candidates, proprio_dim]
 
     candidates_t = torch.from_numpy(candidates).to(device=device, dtype=dtype)  # [N, chunk_len, action_dim]
     candidates_for_critic = candidates_t[:, :horizon_length, :]  # [N, horizon_length, action_dim] -- matches critic's training input dim
@@ -131,10 +176,10 @@ def best_of_n_action(
         # matches "best ablation" performance, the apparent best-of-N gains
         # throughout this investigation may just be free sample diversity
         # from stochastic decoding, not selection quality.
-        best_idx = int(torch.randint(0, num_samples, (1,)).item())
+        best_idx = int(torch.randint(0, num_candidates, (1,)).item())
     elif selection_mode == "majority_vote":
         per_head_best = torch.argmax(qs, dim=-1) if maximize_score else torch.argmin(qs, dim=-1)  # [num_qs]
-        votes = torch.bincount(per_head_best, minlength=num_samples)
+        votes = torch.bincount(per_head_best, minlength=num_candidates)
         best_idx = int(torch.argmax(votes).item())
     else:
         best_idx = int((torch.argmax(score) if maximize_score else torch.argmin(score)).item())
