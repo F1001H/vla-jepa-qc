@@ -95,6 +95,10 @@ def main(args) -> None:
         ),
         adaptive_entropy_threshold=args.adaptive_entropy_threshold,
         adaptive_resample_temperature=args.adaptive_resample_temperature,
+        exploit_temperature=args.exploit_temperature,
+        explore_temperature=args.explore_temperature,
+        explore_fraction=args.explore_fraction,
+        explore_margin=args.explore_margin,
     )
     policy = QCPolicyWrapper(vla, critic, args.num_samples, score_kwargs)
 
@@ -133,7 +137,7 @@ def build_argparser():
     parser.add_argument("--maximize_score", "--maximize-score", dest="maximize_score", action="store_true")
     parser.add_argument(
         "--selection_mode", "--selection-mode", dest="selection_mode",
-        type=str, default="score", choices=["score", "majority_vote", "random"],
+        type=str, default="score", choices=["score", "majority_vote", "random", "tiered"],
     )
     parser.add_argument(
         "--normalize_score_terms", "--normalize-score-terms", dest="normalize_score_terms",
@@ -198,6 +202,33 @@ def build_argparser():
         help="Temperature used for the EXTRA resampled batch when "
         "adaptive_entropy_threshold triggers (default 1.3, the setting found best "
         "on one LIBERO-Plus category in today's fixed-temperature sweep).",
+    )
+    parser.add_argument(
+        "--exploit_temperature", "--exploit-temperature", dest="exploit_temperature",
+        type=float, default=1.0,
+        help="[selection_mode=tiered only] Temperature for the 'exploit' tier -- "
+        "candidates kept close to the trained distribution, scored by q-value.",
+    )
+    parser.add_argument(
+        "--explore_temperature", "--explore-temperature", dest="explore_temperature",
+        type=float, default=1.6,
+        help="[selection_mode=tiered only] Temperature for the 'explore' tier -- "
+        "candidates deliberately pushed off-distribution to force a real "
+        "disagreement signal to exist, scored by cross-head disagreement.",
+    )
+    parser.add_argument(
+        "--explore_fraction", "--explore-fraction", dest="explore_fraction",
+        type=float, default=0.5,
+        help="[selection_mode=tiered only] Fraction of num_samples allocated to the "
+        "explore tier (rest go to exploit).",
+    )
+    parser.add_argument(
+        "--explore_margin", "--explore-margin", dest="explore_margin",
+        type=float, default=1.0,
+        help="[selection_mode=tiered only] The explore tier's best disagreement must "
+        "exceed this many z-scored units (relative to the exploit tier's OWN "
+        "disagreement spread) to be chosen over the exploit pick -- "
+        "optimism-under-uncertainty with a margin, not 'always explore.'",
     )
     return parser
 

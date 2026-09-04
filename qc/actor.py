@@ -54,6 +54,10 @@ def best_of_n_action(
     candidate_temperature_spread: tuple[float, float] | None = None,
     adaptive_entropy_threshold: float | None = None,
     adaptive_resample_temperature: float = 1.3,
+    exploit_temperature: float = 1.0,
+    explore_temperature: float = 1.6,
+    explore_fraction: float = 0.5,
+    explore_margin: float = 1.0,
     **kwargs,
 ) -> dict:
     """Returns dict shaped like predict_action's original output (single
@@ -70,24 +74,57 @@ def best_of_n_action(
     aggregation/truncation happens at read/use time).
     """
     embodied_action_tokens_t = encode_observation(model, batch_images, instructions)  # [1, num_tokens, H] torch, on-device
-    # candidate_temperature_spread (if set) gives each of the N candidates
-    # its OWN temperature (np.linspace across the range) instead of one
-    # global value -- every batch then spans a range of diversity levels by
-    # construction, no threshold to tune and no second forward pass, unlike
-    # adaptive_entropy_threshold below (they can still be combined: a
-    # spread-sampled batch can still trigger additional resampling if its
-    # overall entropy is still too low).
-    base_temperature = (
-        np.linspace(candidate_temperature_spread[0], candidate_temperature_spread[1], num_samples)
-        if candidate_temperature_spread is not None
-        else candidate_temperature
-    )
-    pred_actions = decode_candidates(
-        model, embodied_action_tokens_t, state=state, num_samples=num_samples,
-        temperature=base_temperature, sde_noise_scale=candidate_sde_noise_scale,
-    )  # [N, chunk_len, action_dim] torch, on-device
 
-    if adaptive_entropy_threshold is not None:
+    n_exploit = None  # set below only for selection_mode=="tiered"; marks the exploit/explore boundary in pred_actions
+    if selection_mode == "tiered":
+        # Explicit exploit/explore split instead of hoping one score formula
+        # balances "safe" (q-driven) and "novel" (disagreement-driven)
+        # behavior implicitly. Low-temperature candidates stay close to the
+        # trained distribution (exploit: picked by q-value); high-temperature
+        # candidates are deliberately pushed off-distribution to FORCE a
+        # real, usable disagreement signal to exist (explore: picked by
+        # disagreement) -- motivated 2026-09-04 by the same diagnosis as
+        # candidate_temperature_spread (default candidates too collapsed for
+        # disagreement to mean anything), but here each tier is scored by
+        # the term that actually matches its purpose, then a meta-decision
+        # (explore_margin, in z-scored units of the exploit tier's OWN
+        # disagreement spread) picks between the two -- optimism-under-
+        # uncertainty: only take the exploratory pick if it's notably more
+        # uncertain than what the safe tier itself shows, not just nonzero.
+        n_explore = max(1, round(num_samples * explore_fraction))
+        n_exploit = num_samples - n_explore
+        exploit_actions = decode_candidates(
+            model, embodied_action_tokens_t, state=state, num_samples=n_exploit,
+            temperature=exploit_temperature, sde_noise_scale=candidate_sde_noise_scale,
+        )
+        explore_actions = decode_candidates(
+            model, embodied_action_tokens_t, state=state, num_samples=n_explore,
+            temperature=explore_temperature, sde_noise_scale=candidate_sde_noise_scale,
+        )
+        pred_actions = torch.cat([exploit_actions, explore_actions], dim=0)  # [0:n_exploit)=exploit, [n_exploit:N)=explore
+    else:
+        # candidate_temperature_spread (if set) gives each of the N candidates
+        # its OWN temperature (np.linspace across the range) instead of one
+        # global value -- every batch then spans a range of diversity levels by
+        # construction, no threshold to tune and no second forward pass, unlike
+        # adaptive_entropy_threshold below (they can still be combined: a
+        # spread-sampled batch can still trigger additional resampling if its
+        # overall entropy is still too low).
+        base_temperature = (
+            np.linspace(candidate_temperature_spread[0], candidate_temperature_spread[1], num_samples)
+            if candidate_temperature_spread is not None
+            else candidate_temperature
+        )
+        pred_actions = decode_candidates(
+            model, embodied_action_tokens_t, state=state, num_samples=num_samples,
+            temperature=base_temperature, sde_noise_scale=candidate_sde_noise_scale,
+        )  # [N, chunk_len, action_dim] torch, on-device
+
+    if adaptive_entropy_threshold is not None and selection_mode != "tiered":
+        # (skipped for selection_mode=="tiered" -- that already has its own
+        # explicit two-tier diversity mechanism, and resampling here would
+        # append extra candidates past n_exploit's boundary, breaking the
+        # tier split the "tiered" selection logic below depends on.)
         # Adaptive diversity boost: 2026-09-03 diagnostics found the default
         # candidates nearly IDENTICAL in raw action space for many states
         # (median std 0.0031 across the LIBERO cache), and a flat/global
@@ -137,7 +174,8 @@ def best_of_n_action(
     q = qs.min(dim=0).values if q_agg == "min" else qs.mean(dim=0)  # [N]
     disagreement = qs.std(dim=0)  # [N] -- cross-head disagreement, critic's own epistemic uncertainty proxy
 
-    if rank_score_terms:
+    if rank_score_terms and selection_mode != "tiered":
+        # (skipped for "tiered" -- it does its own within-tier z-scoring below.)
         # Alternative to z-scoring: convert each term to its zero-centered
         # RANK among the N candidates instead of a rescaled value. Motivated
         # by an empirical A/B (2026-09-03, local): normalize_score_terms
@@ -158,7 +196,7 @@ def best_of_n_action(
         q = _rank(q)
         disagreement = _rank(disagreement)
         actor_disagreement = _rank(actor_disagreement)
-    elif normalize_score_terms:
+    elif normalize_score_terms and selection_mode != "tiered":
         # Raw q/disagreement/actor_disagreement live on wildly different scales
         # (diagnosed offline against qc_cache_full_intrinsic.npz: median
         # within-timestep spread ratio q:disagreement:actor_disagreement was
@@ -183,7 +221,34 @@ def best_of_n_action(
         + actor_disagreement_penalty * actor_disagreement
     )
 
-    if selection_mode == "random":
+    if selection_mode == "tiered":
+        # Exploit tier occupies [0, n_exploit), explore tier [n_exploit, N).
+        # Exploit pick: best q WITHIN the exploit tier (the "safe" choice).
+        exploit_q = q[:n_exploit]
+        exploit_local_idx = int((torch.argmax(exploit_q) if maximize_score else torch.argmin(exploit_q)).item())
+        exploit_idx = exploit_local_idx
+
+        # Explore pick: highest disagreement WITHIN the explore tier (always
+        # argmax -- high disagreement means "informative/novel" regardless
+        # of maximize_score's q-direction convention).
+        explore_disagreement = disagreement[n_exploit:]
+        explore_local_idx = int(torch.argmax(explore_disagreement).item())
+        explore_idx = n_exploit + explore_local_idx
+
+        # Meta-decision: take the explore pick only if it's notably MORE
+        # uncertain than the exploit tier's own disagreement spread would
+        # suggest is normal (z-scored against the exploit tier specifically,
+        # not the whole pool, since the explore tier's disagreement is
+        # inflated by construction and isn't a fair comparison baseline for
+        # itself) -- optimism-under-uncertainty, not "explore whenever
+        # possible."
+        exploit_disagreement = disagreement[:n_exploit]
+        exploit_disagreement_mean = exploit_disagreement.mean()
+        exploit_disagreement_std = exploit_disagreement.std(unbiased=False) + 1e-6
+        explore_z = ((disagreement[explore_idx] - exploit_disagreement_mean) / exploit_disagreement_std).item()
+
+        best_idx = explore_idx if explore_z > explore_margin else exploit_idx
+    elif selection_mode == "random":
         # Control: ignores q/disagreement/actor_disagreement entirely, picks
         # uniformly among the N candidates. Establishes the floor -- if this
         # matches "best ablation" performance, the apparent best-of-N gains
