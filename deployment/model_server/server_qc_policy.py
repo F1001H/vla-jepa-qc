@@ -90,6 +90,9 @@ def main(args) -> None:
         rank_score_terms=args.rank_score_terms,
         candidate_temperature=args.candidate_temperature,
         candidate_sde_noise_scale=args.candidate_sde_noise_scale,
+        candidate_temperature_spread=(
+            tuple(args.candidate_temperature_spread) if args.candidate_temperature_spread else None
+        ),
         adaptive_entropy_threshold=args.adaptive_entropy_threshold,
         adaptive_resample_temperature=args.adaptive_resample_temperature,
     )
@@ -164,6 +167,16 @@ def build_argparser():
         "start (default 0.0 = original pure-ODE behavior, no injection). Likely "
         "gentler on action quality than candidate_temperature for the same amount "
         "of added diversity, since it's spread across the whole trajectory.",
+    )
+    parser.add_argument(
+        "--candidate_temperature_spread", "--candidate-temperature-spread", dest="candidate_temperature_spread",
+        type=float, nargs=2, default=None, metavar=("LOW", "HIGH"),
+        help="Give each of the N candidates its OWN temperature (np.linspace(LOW, HIGH, "
+        "num_samples)) instead of one uniform candidate_temperature -- every batch then "
+        "spans a range of diversity levels by construction, no threshold to tune, no "
+        "second forward pass. Overrides candidate_temperature when set. Can still be "
+        "combined with adaptive_entropy_threshold (that would trigger extra resampling "
+        "on top if the spread-sampled batch's overall entropy is still too low).",
     )
     parser.add_argument(
         "--adaptive_entropy_threshold", "--adaptive-entropy-threshold", dest="adaptive_entropy_threshold",

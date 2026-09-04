@@ -51,6 +51,7 @@ def best_of_n_action(
     rank_score_terms: bool = False,
     candidate_temperature: float = 1.0,
     candidate_sde_noise_scale: float = 0.0,
+    candidate_temperature_spread: tuple[float, float] | None = None,
     adaptive_entropy_threshold: float | None = None,
     adaptive_resample_temperature: float = 1.3,
     **kwargs,
@@ -69,9 +70,21 @@ def best_of_n_action(
     aggregation/truncation happens at read/use time).
     """
     embodied_action_tokens_t = encode_observation(model, batch_images, instructions)  # [1, num_tokens, H] torch, on-device
+    # candidate_temperature_spread (if set) gives each of the N candidates
+    # its OWN temperature (np.linspace across the range) instead of one
+    # global value -- every batch then spans a range of diversity levels by
+    # construction, no threshold to tune and no second forward pass, unlike
+    # adaptive_entropy_threshold below (they can still be combined: a
+    # spread-sampled batch can still trigger additional resampling if its
+    # overall entropy is still too low).
+    base_temperature = (
+        np.linspace(candidate_temperature_spread[0], candidate_temperature_spread[1], num_samples)
+        if candidate_temperature_spread is not None
+        else candidate_temperature
+    )
     pred_actions = decode_candidates(
         model, embodied_action_tokens_t, state=state, num_samples=num_samples,
-        temperature=candidate_temperature, sde_noise_scale=candidate_sde_noise_scale,
+        temperature=base_temperature, sde_noise_scale=candidate_sde_noise_scale,
     )  # [N, chunk_len, action_dim] torch, on-device
 
     if adaptive_entropy_threshold is not None:

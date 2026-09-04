@@ -321,7 +321,7 @@ class FlowmatchingActionHead(nn.Module):
         self,
         vl_embs: torch.Tensor,
         state: torch.Tensor = None,
-        temperature: float = 1.0,
+        temperature=1.0,
         sde_noise_scale: float = 0.0,
     ) -> torch.Tensor:
         """temperature/sde_noise_scale default to 1.0/0.0, which reproduces
@@ -342,10 +342,19 @@ class FlowmatchingActionHead(nn.Module):
         added diversity) -- see qc/actor.py's isolation-ablation findings
         for why raising diversity, not fixing the score-combination
         formula, is the current best lead.
+
+        temperature may be a plain float (uniform across the batch, original
+        behavior) OR a 1D array-like of length batch_size (one temperature
+        PER CANDIDATE) -- e.g. np.linspace(0.8, 1.6, num_samples) guarantees
+        every best-of-N batch spans a range of diversity levels instead of
+        committing the whole batch to one global setting. See
+        qc/actor.py's candidate_temperature_spread.
         """
         # Set initial actions as the sampled noise.
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
+        if not isinstance(temperature, (int, float)):
+            temperature = torch.as_tensor(temperature, dtype=vl_embs.dtype, device=device).reshape(batch_size, 1, 1)
         actions = torch.randn(
             size=(batch_size, self.config.action_horizon, self.config.action_dim),
             dtype=vl_embs.dtype,
