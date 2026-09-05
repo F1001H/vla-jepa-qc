@@ -1,0 +1,123 @@
+# VLA-JEPA fine-tuning config for kobo (single-arm bimanual-cube-style
+# platform), adapted from scripts/configs/vlajepa_libero_ft.yaml.
+#
+# UNVERIFIED, flag before trusting: task_key below is a guess ("task",
+# LeRobot v3's standard convention) -- confirm against the actual kobo
+# LeRobot v3 dataset once built (e.g. `LeRobotDataset(repo_id)[0].keys()`)
+# before a real training run.
+#
+# Uses dataset_py: lerobot_v3_datasets (starVLA/dataloader/lerobot_v3_datasets.py)
+# instead of the LIBERO template's `lerobot_datasets` -- this path reads
+# LeRobot v3 datasets natively via LeRobotDataset/LeRobotDatasetMetadata, no
+# per-robot "embodiment"/modality-config class needed (unlike the v2/GR00T
+# path LIBERO/Bridge use in the template), just the explicit
+# img_keys/state_key/action_key/task_key/resize_size fields below matching
+# the dataset's own column names (see CLAUDE.md's KoboDataConfig section
+# and convert_to_task.py's `features` dict for the schema this assumes:
+# observation.images.cam1/cam2, observation.state, action, all 8-dim for
+# state/action -- 3D position + quaternion + 1D gripper width, per
+# convert_to_task.py's `action_names`).
+run_id: vlajepa_kobo_ft
+run_root_dir: ${oc.env:WORKSPACE}/runs
+seed: 42
+trackers:
+- json
+is_debug: false
+framework:
+  name: VLA_JEPA
+  qwenvl:
+    base_vlm: ${oc.env:WORKSPACE}/checkpoints/Qwen3-VL-2B-Instruct
+    attn_implementation: flash_attention_2
+    vl_hidden_dim: 2048
+  action_model:
+    action_model_type: DiT-B
+    action_hidden_dim: 1024
+    hidden_size: 1024
+    add_pos_embed: true
+    max_seq_len: 1024
+    action_dim: 8   # kobo: 3D position + quaternion (4) + gripper width, NOT LIBERO's 7
+    state_dim: 8    # same layout, see convert_to_task.py's action_names
+    future_action_window_size: 6   # chunk length = future_action_window_size+1 = 7, matches
+    action_horizon: 7               # the qc/ pipeline's native chunk_len used throughout this investigation
+    past_action_window_size: 0
+    repeated_diffusion_steps: 8
+    noise_beta_alpha: 1.5
+    noise_beta_beta: 1.0
+    noise_s: 0.999
+    num_timestep_buckets: 1000
+    num_inference_timesteps: 4
+    num_target_vision_tokens: 32
+    diffusion_model_cfg:
+      cross_attention_dim: 2048
+      dropout: 0.2
+      final_dropout: true
+      interleave_self_attention: true
+      norm_type: ada_norm
+      num_layers: 16
+      output_dim: 1024
+      positional_embeddings: null
+  vj2_model:
+    base_encoder: ${oc.env:WORKSPACE}/checkpoints/vjepa2-vitl-fpc64-256
+    num_frames: 8
+    depth: 12
+    num_heads: 8
+    special_action_token: <|action_{}|>
+    num_action_tokens_per_timestep: 8
+    embodied_action_token: <|embodied_action|>
+    num_embodied_action_tokens_per_instruction: 32
+  reduce_in_full_precision: true
+datasets:
+  vla_data:
+    dataset_py: lerobot_v3_datasets
+    data_root_dir: ${oc.env:KOBO_DATASET_ROOT}   # parent dir containing the per-task LeRobot v3 dataset dirs, set via env var (see slurm script)
+    data_mix: kobo_all                            # registered in starVLA/dataloader/gr00t_lerobot/mixtures.py
+    img_keys:
+    - observation.images.cam1
+    - observation.images.cam2
+    state_key: observation.state
+    action_key: action
+    task_key: task   # UNVERIFIED -- confirm against the real dataset, see header comment
+    resize_size: 224
+    CoT_prompt: Your task is {instruction}. Infer the temporal dynamics from frames
+      {actions} and produce the corresponding policy actions {e_actions}.
+    per_device_batch_size: 8
+    load_all_data_for_training: true
+    action_horizon: 7
+    with_state: true
+trainer:
+  epochs: 100
+  max_train_steps: 30000       # per Fabian's plan (2026-09-03): 30k steps, ~30h -- NOT the LIBERO template's 120000 (sized for ~1700 episodes across 4 diverse suites)
+  num_warmup_steps: 5000       # kept at the same ~1/6 ratio as the template's 20000/120000
+  save_interval: 5000
+  eval_interval: 100
+  learning_rate:
+    base: 3.0e-05
+    qwen_vl_interface: 1.0e-05
+    action_model: 0.0001
+    vj_predictor: 0.0005
+  lr_scheduler_type: cosine_with_min_lr
+  scheduler_specific_kwargs:
+    min_lr: 1.0e-05
+  freeze_modules: ''
+  loss_scale:
+    vla: 1.0
+    vlm: 0.1
+  max_grad_norm: 1.0
+  warmup_ratio: 0.1
+  weight_decay: 0.0
+  logging_frequency: 10
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  pretrained_checkpoint: ${oc.env:WORKSPACE}/checkpoints/VLA-JEPA-pretrain-repo/Pretrain/checkpoints/VLA-JEPA-pretrain.pt
+  optimizer:
+    name: AdamW
+    betas:
+    - 0.9
+    - 0.95
+    eps: 1.0e-08
+    weight_decay: 1.0e-08
+  is_resume: false
+  resume_epoch: null
+  resume_step: null
+  enable_gradient_checkpointing: true
+  enable_mixed_precision_training: true

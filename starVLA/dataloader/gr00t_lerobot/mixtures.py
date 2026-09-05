@@ -69,5 +69,17 @@ DATASET_NAMED_MIXTURES = {
         ("BEHAVIOR_challenge", 1.0, "R1Pro"),
     ],
 
-
+    # kobo (single-arm bimanual-cube-style platform), used with
+    # dataset_py=lerobot_v3_datasets (starVLA/dataloader/lerobot_v3_datasets.py),
+    # NOT the GR00T-embodiment-config path -- robot_type here is unused by
+    # that loader (get_lerobot_v3_datasets never reads it), just carried
+    # through for documentation. Dataset directory names (d_name) are
+    # PLACEHOLDERS -- fill in with the real per-task LeRobot v3 dataset dir
+    # names once built (see convert_to_task.py; needs adapting for
+    # single-arm kobo + multi-task before it can produce these).
+    "kobo_all": [
+        ("cup_hanging_lerobot", 1.0, "kobo_single_arm"),
+        # add more (task_name_lerobot, 1.0, "kobo_single_arm") entries here
+        # as each task's data finishes collection + conversion
+    ],
 }
