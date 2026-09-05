@@ -18,7 +18,7 @@ import torch
 
 from deployment.model_server.tools.websocket_policy_server import WebsocketPolicyServer
 from qc.actor import best_of_n_action
-from qc.critic import QChunkCritic
+from qc.critic import DuelingQChunkCritic, QChunkCritic
 from starVLA.model.framework.base_framework import baseframework
 
 
@@ -59,7 +59,8 @@ def main(args) -> None:
     embed_dim = vla.config.framework.qwenvl.vl_hidden_dim
     proprio_dim = vla.config.framework.action_model.state_dim or 0
 
-    critic = QChunkCritic(
+    critic_cls = DuelingQChunkCritic if args.critic_type == "dueling" else QChunkCritic
+    critic = critic_cls(
         embed_dim=embed_dim,
         proprio_dim=proprio_dim,
         action_dim=action_dim,
@@ -127,6 +128,13 @@ def build_argparser():
     parser.add_argument("--num_samples", "--num-samples", dest="num_samples", type=int, default=8)
     parser.add_argument("--horizon_length", "--horizon-length", dest="horizon_length", type=int, default=5)
     parser.add_argument("--num_qs", "--num-qs", dest="num_qs", type=int, default=5)
+    parser.add_argument(
+        "--critic_type", "--critic-type", dest="critic_type",
+        type=str, default="monolithic", choices=["monolithic", "dueling"],
+        help="monolithic = QChunkCritic (qc/train_critic.py checkpoints), dueling = "
+        "DuelingQChunkCritic (qc/train_dueling_critic.py checkpoints) -- must match "
+        "whichever script trained --critic_checkpoint_path, state_dict keys differ.",
+    )
     parser.add_argument("--q_agg", "--q-agg", dest="q_agg", type=str, default="mean", choices=["mean", "min"])
     parser.add_argument("--uncertainty_penalty", "--uncertainty-penalty", dest="uncertainty_penalty", type=float, default=0.0)
     parser.add_argument(

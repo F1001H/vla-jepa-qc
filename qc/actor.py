@@ -170,7 +170,20 @@ def best_of_n_action(
     actor_disagreement = torch.sqrt(((candidates_for_critic - action_mean) ** 2).mean(dim=(1, 2)))  # [N]
 
     with torch.no_grad():
-        qs = critic(embed_t, proprio_t, candidates_for_critic)  # [num_qs, N]
+        if hasattr(critic, "forward_v"):
+            # DuelingQChunkCritic: Q = V(s) + (A(s,a) - mean_N(A(s,a'))).
+            # embed_t/proprio_t are already repeated per-candidate (rows
+            # aligned with candidates_for_critic, same "N candidates as the
+            # batch dim" convention as the monolithic path below), so this
+            # needs no extra forward pass -- the N candidates already being
+            # scored here ARE the correct centering baseline for eval-time
+            # selection (see DuelingQChunkCritic's docstring in qc/critic.py).
+            v = critic.forward_v(embed_t, proprio_t)  # [num_qs, N] -- same V value per row, redundant but harmless
+            a = critic.forward_a(embed_t, proprio_t, candidates_for_critic)  # [num_qs, N]
+            baseline = a.mean(dim=-1, keepdim=True)  # [num_qs, 1]
+            qs = v + (a - baseline)  # [num_qs, N]
+        else:
+            qs = critic(embed_t, proprio_t, candidates_for_critic)  # [num_qs, N]
     q = qs.min(dim=0).values if q_agg == "min" else qs.mean(dim=0)  # [N]
     disagreement = qs.std(dim=0)  # [N] -- cross-head disagreement, critic's own epistemic uncertainty proxy
 
