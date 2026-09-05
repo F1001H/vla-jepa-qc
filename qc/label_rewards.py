@@ -175,6 +175,7 @@ def label_episode(
     ep_idx: int,
     horizon_length: int,
     num_candidates: int,
+    candidate_temperature: float = 1.0,
 ) -> dict | None:
     states, actions, images, wrist_images, task = ds.load_episode(ep_idx)
     n = states.shape[0]
@@ -192,7 +193,8 @@ def label_episode(
         state_i = states[i : i + 1]  # [1, state_dim], matches predict_action's expected shape
 
         out = predict_action_candidates(
-            model, [[img, wrist]], [task], state=[state_i], num_samples=num_candidates
+            model, [[img, wrist]], [task], state=[state_i], num_samples=num_candidates,
+            temperature=candidate_temperature,
         )
         embed_i = out["embodied_action_tokens"].mean(axis=1)[0]  # [H] pooled
         cand_i = out["normalized_actions"]  # [num_candidates, chunk_len, action_dim]
@@ -221,6 +223,16 @@ def main():
     p.add_argument("--output-path", required=True)
     p.add_argument("--horizon-length", type=int, default=5)
     p.add_argument("--num-candidates", type=int, default=8)
+    p.add_argument(
+        "--candidate-temperature", type=float, default=1.0,
+        help="Scales the flow-matching sampler's initial noise draw when generating "
+             "the cached candidates (see qc/actor.py's best_of_n_action for background "
+             "-- default 1.0 candidates were found nearly identical in raw action "
+             "space). Set >1.0 to label a cache whose candidate diversity matches "
+             "what best_of_n_action's own candidate_temperature/candidate_temperature_spread "
+             "actually samples at inference time, instead of training the critic on "
+             "unrealistically narrow candidates.",
+    )
     p.add_argument("--max-episodes", type=int, default=None)
     p.add_argument("--cuda", type=int, default=0)
     p.add_argument(
@@ -263,7 +275,7 @@ def main():
 
     print(f"Labeling {len(shard_episodes)}/{num_episodes} episodes "
           f"(shard {args.shard_id}/{args.num_shards}), horizon_length={args.horizon_length}, "
-          f"num_candidates={args.num_candidates}")
+          f"num_candidates={args.num_candidates}, candidate_temperature={args.candidate_temperature}")
 
     def save_checkpoint():
         # _num_episodes is the GLOBAL total (an upper bound for downstream
@@ -273,6 +285,7 @@ def main():
         out["_num_episodes"] = num_episodes
         out["_horizon_length"] = args.horizon_length
         out["_num_candidates"] = args.num_candidates
+        out["_candidate_temperature"] = args.candidate_temperature
         out["_ckpt_path"] = args.ckpt_path
         out["_done_episodes"] = np.array(sorted(done_episodes), dtype=np.int64)
         tmp_path = out_path.with_suffix(".tmp.npz")
@@ -283,7 +296,9 @@ def main():
     for ep_idx in tqdm.tqdm(shard_episodes):
         if ep_idx in done_episodes:
             continue
-        result = label_episode(model, ds, ep_idx, args.horizon_length, args.num_candidates)
+        result = label_episode(
+            model, ds, ep_idx, args.horizon_length, args.num_candidates, args.candidate_temperature
+        )
         if result is None:
             skipped += 1
             continue
